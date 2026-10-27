@@ -19,6 +19,9 @@ build/
 Thumbs.db
 desktop.ini
 
+# 本地 Agent 工作区状态（如需团队共享 skill 可删掉这行）
+.workbuddy/
+
 # 日志 / 临时文件
 *.log
 *.tmp
