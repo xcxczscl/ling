@@ -62,7 +62,7 @@ old/       旧版本内容，只作参考
 1. [`docs/common/00-文档编写规范.md`](docs/common/00-文档编写规范.md) — 文档怎么组织、怎么评审
 2. [`docs/common/01-术语表.md`](docs/common/01-术语表.md) — 统一名词，含项目代号 LING / RM / PLR
 3. [`docs/ling/00-总览与术语.md`](docs/ling/00-总览与术语.md) — ling 是什么、边界在哪、专属名词什么意思
-4. [`docs/ling/01-需求规格.md`](docs/ling/01-需求规格.md) — 宿主必须做到什么，共 115 条
+4. [`docs/ling/01-需求规格.md`](docs/ling/01-需求规格.md) — 宿主必须做到什么，共 116 条
 5. [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md) — 用什么语言、插件怎么装、为什么这么选
 6. [`docs/ling/03-架构设计.md`](docs/ling/03-架构设计.md) — 分成哪几块、状态放哪、谁改谁读
 7. 后续按序号推进（见 `docs/ling/00-总览与术语.md` 的文档地图）
