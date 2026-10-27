@@ -1,0 +1,15 @@
+[plugin]
+id = "demo-sidecar"
+version = "0.1.0"
+api = "1"
+name = "示例侧车"
+description = "L6 验收用：Python 进程外侧车（jsonl 控制面），可注册方法、被 Rust 插件调用"
+
+[requires]
+capabilities = []
+plugins = []
+
+[sidecar]
+executable = "sidecar/demo_sidecar.py"
+protocol = "jsonl"
+restart = "on-crash"

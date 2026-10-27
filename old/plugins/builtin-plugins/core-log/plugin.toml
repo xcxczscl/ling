@@ -1,0 +1,10 @@
+[plugin]
+id = "core-log"
+version = "1.0.0"
+api = "1"
+name = "日志"
+description = "插件日志的统一写入、查询与轮转（单插件 10 MB × 5 份，可选安装）"
+
+[requires]
+capabilities = ["fs", "ui"]
+plugins = []

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>词条 — resources-manager</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; }
+  pre { background: #f6f6f6; padding: 1rem; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>词条</h1>
+<pre id="out">加载中…</pre>
+<script>
+async function load() {
+  const j = await fetch('/rpc', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({plugin:'resources-manager', method:'resources-manager.entry.list', args:{page:{limit:200,offset:0}}})}).then(r=>r.json());
+  document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+}
+load().catch(e => { document.getElementById('out').textContent = String(e); });
+</script>
+</body>
+</html>

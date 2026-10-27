@@ -1,0 +1,13 @@
+[package]
+name = "core-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "日志收集：插件日志写入/查询与轮转（可选安装）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true

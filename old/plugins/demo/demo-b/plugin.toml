@@ -1,0 +1,9 @@
+[plugin]
+id = "demo-b"
+version = "0.1.0"
+api = "1"
+name = "示例 B"
+description = "L1 验收用：带能力标注的方法、事件订阅与 data/ 落盘"
+
+[requires]
+capabilities = ["fs"]

@@ -1,0 +1,10 @@
+[plugin]
+id = "core-settings"
+version = "1.0.0"
+api = "1"
+name = "设置"
+description = "插件业务设置的存储与模式校验（SQLite），提供设置页框架"
+
+[requires]
+capabilities = ["fs", "ui"]
+plugins = ["core-ui@1"]

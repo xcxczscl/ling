@@ -1,0 +1,20 @@
+<div class="wrap" data-shell="p2">
+  <h1>查看器（图片 / PDF）</h1>
+
+  <div class="card">
+    <label for="target">内容（placement_id 或 content_id blake3…）</label>
+    <input id="target" placeholder="10242 或 1a2b3c…" autocomplete="off">
+    <div class="row">
+      <button class="primary" id="btnOpen">打开</button>
+      <button id="btnPrev" disabled>上一页</button>
+      <span id="meta" class="meta">–</span>
+      <button id="btnNext" disabled>下一页</button>
+      <button id="btnStop" disabled>停止</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div id="frameBox"><span class="hint">尚未打开内容。视频/音频请用「播放器」控制页。</span></div>
+  </div>
+</div>

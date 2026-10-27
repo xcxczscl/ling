@@ -1,0 +1,22 @@
+[package]
+name = "rm-transfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "数据同步（M3）：局域网身份、配对握手、blob 传输、断点续传、按需策略"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+rm-proto = { path = "../rm-proto" }
+rm-catalog = { path = "../rm-catalog" }
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

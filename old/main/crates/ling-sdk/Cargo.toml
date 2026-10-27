@@ -1,0 +1,10 @@
+[package]
+name = "ling-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ling 插件开发套件：Plugin trait、Context、能力与错误类型"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

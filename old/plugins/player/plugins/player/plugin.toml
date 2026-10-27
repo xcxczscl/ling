@@ -1,0 +1,11 @@
+[plugin]
+id = "player"
+version = "0.1.0"
+api = "1"
+name = "内容执行器"
+description = "播放、查看、运行 resources-manager 登记的内容；支持串流到局域网设备"
+
+[requires]
+# network：rm 流 URL 访问；shell：P1 起子进程调用 pdftoppm/pdfinfo/ffprobe（附录 B #28 登记）
+capabilities = ["network", "shell"]
+plugins = ["resources-manager"]

@@ -1,0 +1,14 @@
+[package]
+name = "core-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "配置存储 + 设置界面：带模式（schema）校验的插件业务设置（默认安装三件套之一）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }

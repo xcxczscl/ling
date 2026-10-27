@@ -1,0 +1,18 @@
+[package]
+name = "ling-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ling 内核：接口方法路由、事件广播、能力门禁、装载通道"
+
+[dependencies]
+ling-sdk = { path = "../ling-sdk" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+libloading.workspace = true
+zip.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

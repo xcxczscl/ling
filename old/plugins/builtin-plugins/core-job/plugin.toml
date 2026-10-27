@@ -1,0 +1,10 @@
+[plugin]
+id = "core-job"
+version = "1.0.0"
+api = "1"
+name = "作业"
+description = "长任务登记与进度广播（resources-manager 等插件的公共服务，可选安装）"
+
+[requires]
+capabilities = ["ui"]
+plugins = []

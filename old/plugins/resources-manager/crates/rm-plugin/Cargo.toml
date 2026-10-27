@@ -1,0 +1,39 @@
+[package]
+name = "rm-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "插件壳：对接 ling 清单与 Plugin trait，把 rm-* 领域库组装成插件"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+rm-proto = { path = "../rm-proto" }
+rm-fs = { path = "../rm-fs" }
+rm-catalog = { path = "../rm-catalog" }
+rm-scan = { path = "../rm-scan" }
+rm-dedup = { path = "../rm-dedup" }
+rm-semantic = { path = "../rm-semantic" }
+rm-classify = { path = "../rm-classify" }
+rm-sync = { path = "../rm-sync" }
+rm-transfer = { path = "../rm-transfer" }
+rm-store = { path = "../rm-store" }
+rm-backup = { path = "../rm-backup" }
+rm-ai = { path = "../rm-ai" }
+ling-sdk = { path = "../../../ling/crates/ling-sdk" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+zstd = "0.14"
+
+[dev-dependencies]
+tempfile.workspace = true
+ling-kernel = { path = "../../../ling/crates/ling-kernel" }
+blake3.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+rm-ai = { path = "../rm-ai" }
+rm-semantic = { path = "../rm-semantic" }

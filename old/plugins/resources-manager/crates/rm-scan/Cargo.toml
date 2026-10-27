@@ -1,0 +1,17 @@
+[package]
+name = "rm-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "扫描：遍历、分层哈希、增量判断、批量入库"
+
+[dependencies]
+rm-proto = { path = "../rm-proto" }
+rm-fs = { path = "../rm-fs" }
+rm-catalog = { path = "../rm-catalog" }
+blake3.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

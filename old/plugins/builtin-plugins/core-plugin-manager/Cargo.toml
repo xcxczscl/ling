@@ -1,0 +1,13 @@
+[package]
+name = "core-plugin-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "插件管理：列表、安装/卸载/启停/重载、能力授权、可安装目录（默认安装三件套之一）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true

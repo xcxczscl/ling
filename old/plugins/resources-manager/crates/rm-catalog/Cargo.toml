@@ -1,0 +1,14 @@
+[package]
+name = "rm-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "目录库：建表、迁移、增删改查（SQLite WAL）"
+
+[dependencies]
+rm-proto = { path = "../rm-proto" }
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

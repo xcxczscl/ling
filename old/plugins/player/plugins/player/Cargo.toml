@@ -1,0 +1,29 @@
+[package]
+name = "player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "player 插件：内容执行器（P0 播放 → P1 图片/PDF → P2 输出/UI → P3/P4 串流 → P5 沙箱 → P6 会话持久化）"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# P3 lite 接收器（同一代码库精简构建，docs/01 §5.4；附录 B #47）。
+[[bin]]
+name = "player-lite"
+path = "src/bin/player_lite.rs"
+
+[dependencies]
+ling-sdk = { path = "../../../ling/crates/ling-sdk" }
+serde_json.workspace = true
+libmpv2 = "6"
+getrandom = "0.2"
+# P6 player.db（§5.11，WAL）：bundled 静态链接，与 rm 同选型同版本（附录 B 登记）。
+rusqlite = { version = "0.32", features = ["bundled"] }
+image = "0.25"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["blocking"] }
+tempfile = "3"
+
+[dev-dependencies]
+ling-kernel = { path = "../../../ling/crates/ling-kernel" }

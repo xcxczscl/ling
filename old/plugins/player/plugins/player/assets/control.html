@@ -1,0 +1,51 @@
+<div class="wrap" data-shell="p2">
+  <h1>播放器（控制面）</h1>
+
+  <div class="card">
+    <label for="target">内容（placement_id 或 content_id blake3…）</label>
+    <input id="target" placeholder="10241 或 1a2b3c…" autocomplete="off">
+    <div class="row">
+      <button class="primary" id="btnPlay">播放</button>
+      <button id="btnPause" disabled>暂停</button>
+      <button id="btnResume" disabled>继续</button>
+      <button id="btnStop" disabled>停止</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="seek">进度 <span id="pos">0.0s</span> / <span id="dur">–</span></label>
+    <input type="range" id="seek" min="0" max="1000" value="0" disabled>
+    <label for="vol" style="margin-top:12px">音量</label>
+    <input type="range" id="vol" min="0" max="100" value="100" disabled>
+    <label for="sub" style="margin-top:12px">字幕轨</label>
+    <select id="sub" disabled>
+      <option value="-1">关闭</option>
+    </select>
+    <div class="row">
+      <span class="phase" id="phase">idle</span>
+      <span id="status"></span>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <label>输出设备（P2）</label>
+    <div id="outputs" class="out-list"><span class="hint">加载中…</span></div>
+  </div>
+
+  <div class="card">
+    <label>局域网接收器（P3/P4 · 投屏）</label>
+    <div id="receivers" class="out-list"><span class="hint">加载中…</span></div>
+    <div class="row" style="margin-top:8px">
+      <label for="castMode" style="font-size:13px;opacity:.8">模式</label>
+      <select id="castMode" style="max-width:180px">
+        <option value="" selected>自动（A/B/C 路由）</option>
+        <option value="A">A 字节转发</option>
+        <option value="B">B 重编码</option>
+        <option value="C">C 帧流</option>
+        <option value="D" disabled>D 屏幕镜像（P4 占位）</option>
+      </select>
+      <button id="btnCastStop" disabled>停止投屏</button>
+    </div>
+  </div>
+</div>

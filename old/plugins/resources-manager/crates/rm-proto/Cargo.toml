@@ -1,0 +1,10 @@
+[package]
+name = "rm-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "resources-manager 接口数据结构的唯一定义处"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

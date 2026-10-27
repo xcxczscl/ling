@@ -1,0 +1,10 @@
+[plugin]
+id = "core-ui"
+version = "1.0.0"
+api = "1"
+name = "界面壳"
+description = "本机网页服务（127.0.0.1:7910 起）、/rpc 网关、界面贡献注册与自动撤下"
+
+[requires]
+capabilities = ["network", "fs", "ui"]
+plugins = []

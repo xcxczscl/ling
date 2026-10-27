@@ -1,0 +1,14 @@
+[package]
+name = "resources-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "多设备文件资源管理插件：扫描、查重、词条、分类（ling 插件）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rm-plugin = { path = "../../crates/rm-plugin" }
+ling-sdk = { path = "../../../ling/crates/ling-sdk" }
+serde_json.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "core-job"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "作业调度：长任务登记、进度广播、取消与查询（可选安装）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true

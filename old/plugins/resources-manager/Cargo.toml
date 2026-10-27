@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rm-proto",
+    "crates/rm-fs",
+    "crates/rm-catalog",
+    "crates/rm-scan",
+    "crates/rm-dedup",
+    "crates/rm-semantic",
+    "crates/rm-classify",
+    "crates/rm-sync",
+    "crates/rm-transfer",
+    "crates/rm-store",
+    "crates/rm-backup",
+    "crates/rm-ai",
+    "crates/rm-plugin",
+    "plugins/resources-manager",
+    "apps/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+blake3 = "1"
+tempfile = "3"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+getrandom = "0.2"
+
+[profile.dev]
+debug = 1

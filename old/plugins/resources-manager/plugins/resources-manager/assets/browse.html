@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>资源浏览 — resources-manager</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  .muted { color: #666; }
+</style>
+</head>
+<body>
+<h1>资源浏览</h1>
+<p class="muted">M1 静态页：数据经 <code>resources-manager.browse.query</code> / <code>scan.stats</code> 注入。</p>
+<table id="tbl">
+  <thead><tr><th>id</th><th>路径</th><th>位置</th><th>内容</th><th>大小</th><th>类型</th><th>状态</th></tr></thead>
+  <tbody></tbody>
+</table>
+<script>
+async function load() {
+  const st = await fetch('/rpc', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({plugin:'resources-manager', method:'resources-manager.scan.stats', args:{}})}).then(r=>r.json());
+  document.getElementById('stats').textContent = JSON.stringify(st);
+  const q = await fetch('/rpc', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({plugin:'resources-manager', method:'resources-manager.browse.query', args:{page:{limit:200,offset:0}}})}).then(r=>r.json());
+  const tb = document.querySelector('#tbl tbody');
+  for (const r of (q.rows||[])) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.id}</td><td>${r.rel_path}</td><td>${r.location_id}</td><td>${(r.content_id||'').slice(0,12)}…</td><td>${r.size}</td><td>${r.asset_type||''}</td><td>${r.state}</td>`;
+    tb.appendChild(tr);
+  }
+}
+load().catch(e => { document.body.insertAdjacentHTML('beforeend', '<p class="muted">'+e+'</p>'); });
+</script>
+<p id="stats"></p>
+</body>
+</html>

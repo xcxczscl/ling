@@ -1,0 +1,17 @@
+[package]
+name = "ling-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ling"
+path = "src/main.rs"
+
+[dependencies]
+ling-kernel = { path = "../ling-kernel" }
+ling-sdk = { path = "../ling-sdk" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

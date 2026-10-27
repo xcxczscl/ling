@@ -1,0 +1,31 @@
+# resources-manager — ling 宿主 systemd 用户级服务
+# 安装：
+#   mkdir -p ~/.config/systemd/user
+#   cp resources-manager.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now resources-manager
+#   loginctl enable-linger $USER        # 开机自启（无需登录）
+# 卸载：
+#   systemctl --user disable --now resources-manager
+#   rm ~/.config/systemd/user/resources-manager.service
+
+[Unit]
+Description=ling 资源管理宿主（resources-manager）
+After=network.target
+# 崩溃自动重启（01 §8.2）
+
+[Service]
+Type=simple
+# ExecStart 路径按安装位置修改；ling 自行发现同目录结构下的插件
+ExecStart=%h/.local/bin/ling
+Restart=on-failure
+RestartSec=2
+# 工作目录=ling 数据根（registry.json / session.json / 插件库所在）
+WorkingDirectory=%h/.local/share/resources-manager
+# 优雅停机窗口（对齐 ling 内核 5s 停用 + 5s 强杀）
+TimeoutStopSec=15
+# 环境变量可覆盖数据根
+Environment=LING_DATA_DIR=%h/.local/share/resources-manager
+
+[Install]
+WantedBy=default.target

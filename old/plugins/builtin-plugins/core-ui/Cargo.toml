@@ -1,0 +1,13 @@
+[package]
+name = "core-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "界面壳：本机网页服务、/rpc 网关、界面贡献注册（默认安装三件套之一）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true

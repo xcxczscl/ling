@@ -1,0 +1,10 @@
+[plugin]
+id = "core-plugin-manager"
+version = "1.0.0"
+api = "1"
+name = "插件管理"
+description = "插件列表与启停、安装/卸载、能力授权、可安装内置插件目录"
+
+[requires]
+capabilities = ["network", "fs", "ui"]
+plugins = ["core-ui@1"]

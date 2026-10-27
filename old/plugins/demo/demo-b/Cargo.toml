@@ -1,0 +1,13 @@
+[package]
+name = "demo-b"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "L1 示例插件 B：提供方法、带能力标注、订阅事件落盘"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ling-sdk = { path = "../../crates/ling-sdk" }
+serde_json.workspace = true

@@ -1,0 +1,59 @@
+resources-manager 发行包 — 安装说明
+====================================
+
+包结构
+------
+  bin/                    ling 宿主 + rmgr 命令行
+  builtin-plugins/        随包分发的内置插件（界面/设置/插件管理/作业/日志）
+  plugins/                资源管理插件（resources-manager）
+  packaging/systemd/      Linux systemd 用户级服务单元
+  packaging/windows/      Windows 服务安装/卸载脚本
+
+Linux 快速开始
+--------------
+  1. 解压到任意目录，例如 ~/.local/opt/resources-manager
+  2. 把 bin/ 加入 PATH，或直接用绝对路径
+  3. 首次运行（前台）：
+       ling
+     数据根默认 ~/.local/share/resources-manager（可用 LING_DATA_DIR 覆盖）
+  4. 常驻 + 开机自启：
+       mkdir -p ~/.config/systemd/user
+       cp packaging/systemd/resources-manager.service ~/.config/systemd/user/
+       # 按实际安装路径修改 ExecStart 与 WorkingDirectory
+       systemctl --user daemon-reload
+       systemctl --user enable --now resources-manager
+       loginctl enable-linger $USER
+  5. 命令行（连接常驻宿主）：
+       rmgr scan /path/to/dir
+     服务器/脚本场景（不依赖常驻进程，直连数据库）：
+       rmgr --standalone scan /path/to/dir
+
+Windows 快速开始
+----------------
+  1. 解压到任意目录（例如 C:\Program Files\resources-manager）
+  2. 以管理员身份 PowerShell 运行：
+       powershell -ExecutionPolicy Bypass -File packaging\windows\install-service.ps1
+  3. 服务注册为开机自启；卸载用 uninstall-service.ps1
+  4. 命令行：bin\rmgr.exe（同 Linux 语义）
+
+浏览器入口
+----------
+  所有图形入口最终都连同一个本机回环服务（默认 127.0.0.1:7910）。
+  首次访问需粘贴会话口令，见数据根下 ling/session.json（文件权限 0600）。
+
+Android
+-------
+  安卓壳（前台服务 + SAF 授权 + 网页视图）由 ling 仓库 apps/ 提供，
+  本发行包只含可交叉编译的 .so 与协议说明；真机验收走
+  docs/03-接口与协议.md §7.4 手工清单。
+
+数据目录
+--------
+  默认（Linux）: ~/.local/share/resources-manager
+  默认（Windows）: %ProgramData%\resources-manager
+  可用环境变量 LING_DATA_DIR 覆盖（以宿主实现为准）。
+
+卸载
+----
+  Linux:  systemctl --user disable --now resources-manager && rm -rf 安装目录 数据目录
+  Windows: packaging\windows\uninstall-service.ps1

@@ -1,0 +1,10 @@
+[plugin]
+id = "demo-a"
+version = "0.1.0"
+api = "1"
+name = "示例 A"
+description = "L1 验收用：转发调用、广播事件、命名空间/能力探针"
+
+[requires]
+capabilities = ["fs"]
+plugins = ["demo-b@0.1.0"]

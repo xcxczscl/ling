@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设备 · 资料管家</title>
+<link rel="stylesheet" href="/assets/ui.css">
+</head>
+<body>
+<header>
+  <h1>设备与同步</h1>
+  <nav>
+    <a href="/browse.html">浏览</a>
+    <a href="/dup.html">查重</a>
+    <a href="/entries.html">词条</a>
+    <a href="/devices.html" aria-current="page">设备</a>
+  </nav>
+</header>
+<main>
+  <section>
+    <h2>本机</h2>
+    <p id="self-device">加载中…</p>
+  </section>
+  <section>
+    <h2>已配对设备</h2>
+    <table id="peer-table">
+      <thead><tr><th>ID</th><th>地址</th><th>指纹</th><th>known_seq</th><th>上次同步</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>同步状态</h2>
+    <p id="sync-status">加载中…</p>
+    <button id="btn-export">导出 op 包</button>
+    <input type="file" id="import-file" accept="application/json">
+    <button id="btn-import">导入 op 包</button>
+  </section>
+  <section>
+    <h2>冲突队列</h2>
+    <table id="conflict-table">
+      <thead><tr><th>ID</th><th>对象</th><th>字段</th><th>类型</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>配对</h2>
+    <label>配对码 <input id="pair-code" placeholder="至少 4 位"></label>
+    <button id="btn-pair">配对（M2 简化）</button>
+  </section>
+</main>
+<script>
+async function call(method, args) {
+  const r = await fetch('/api/method', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({plugin: 'resources-manager', method, args: args || {}})
+  });
+  return r.json();
+}
+async function refresh() {
+  try {
+    const st = await call('resources-manager.sync.status');
+    const d = st.result || st;
+    const peers = d.peers || [];
+    document.querySelector('#peer-table tbody').innerHTML = peers.map(p =>
+      `<tr><td>${p.device_id}</td><td>${p.addr||''}</td><td>${(p.fingerprint||'').slice(0,12)}</td><td>${p.known_seq}</td><td>${p.last_sync}</td></tr>`
+    ).join('') || '<tr><td colspan="5">无配对设备</td></tr>';
+    document.querySelector('#sync-status').textContent =
+      `待同步 op ${d.pending_ops} · 待决冲突 ${d.conflict_count} · 上次同步 ${d.last_sync}`;
+    const c = await call('resources-manager.sync.conflict.list', {state:'pending', page:{limit:50, offset:0}});
+    const cr = c.result || c;
+    document.querySelector('#conflict-table tbody').innerHTML = (cr.rows||[]).map(r =>
+      `<tr><td>${r.id}</td><td>${r.object_kind}:${r.object_id}</td><td>${r.field}</td><td>${r.conflict_kind}</td>
+       <td><button data-cid="${r.id}" class="resolve">keep_mine</button></td></tr>`
+    ).join('') || '<tr><td colspan="5">无待决冲突</td></tr>';
+    document.querySelectorAll('button.resolve').forEach(b => b.onclick = async () => {
+      await call('resources-manager.sync.conflict.resolve', {conflict_id: b.dataset.cid, choice: 'keep_mine'});
+      refresh();
+    });
+  } catch (e) {
+    document.querySelector('#sync-status').textContent = '加载失败：' + e;
+  }
+}
+document.querySelector('#btn-pair').onclick = async () => {
+  const code = document.querySelector('#pair-code').value.trim();
+  if (!code) return;
+  await call('resources-manager.device.pair', {code});
+  refresh();
+};
+document.querySelector('#btn-export').onclick = async () => {
+  const r = await call('resources-manager.sync.export', {limit: 1000});
+  const blob = new Blob([JSON.stringify((r.result||r).ops || [], null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rm-ops.json';
+  a.click();
+};
+document.querySelector('#import-file').onchange = async (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  const ops = JSON.parse(text);
+  await call('resources-manager.sync.import', {ops});
+  refresh();
+};
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

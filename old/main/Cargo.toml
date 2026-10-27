@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ling-sdk",
+    "crates/ling-kernel",
+    "crates/ling-cli",
+    "plugins/demo-a",
+    "plugins/demo-b",
+    "builtin-plugins/core-ui",
+    "builtin-plugins/core-settings",
+    "builtin-plugins/core-plugin-manager",
+    "builtin-plugins/core-job",
+    "builtin-plugins/core-log",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+libloading = "0.8"
+zip = "9"
+getrandom = "0.2"
+
+[profile.dev]
+debug = 1

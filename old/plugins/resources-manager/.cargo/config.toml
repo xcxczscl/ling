@@ -1,0 +1,28 @@
+# 编译产物输出到工作区根目录 run/ 下，保持源码仓库轻量。
+[build]
+target-dir = "../run/target/resources-manager"
+
+# 主机为 x86_64-unknown-linux-musl（Alpine）：musl 目标默认 crt-static，
+# 会拒绝产出 cdylib（ling 插件轨道的 .so）。关闭静态 crt 后可正常产出动态库。
+# 与 ling/.cargo/config.toml 保持一致（M6 打包需要）。
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+# ---------------------------------------------------------------------------
+# 交叉编译就绪（M6，docs/03 §7.3）
+#
+# Windows（在 Linux 上交叉）：
+#   rustup target add x86_64-pc-windows-gnu
+#   apk add mingw-w64-gcc   # 或对应发行版的 mingw 包
+#   TARGET=x86_64-pc-windows-gnu scripts/package.sh
+#
+# Android（.so 产物，真机验收走 docs/03 §7.4 手工清单）：
+#   rustup target add aarch64-linux-android
+#   安装 Android NDK，设置 ANDROID_NDK_HOME
+#   cargo install cargo-ndk
+#   cargo ndk -t arm64-v8a -o /tmp/android-libs build --release -p rm-plugin
+#   产物 libresources_manager.so 交由 ling 安卓壳（apps/）打包进 APK。
+#
+# 说明：cargo-ndk / mingw 未随本环境预装；上述路径在具备工具链的 CI/开发机
+# 上可直接复用 scripts/package.sh 的组装逻辑。
+# ---------------------------------------------------------------------------

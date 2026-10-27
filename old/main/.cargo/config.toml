@@ -1,0 +1,9 @@
+# 编译产物输出到工作区根目录 run/ 下，保持源码仓库轻量。
+[build]
+target-dir = "../run/target/ling"
+
+# 主机为 x86_64-unknown-linux-musl（Alpine）：musl 目标默认 crt-static，
+# 会拒绝产出 cdylib（插件轨道的 .so）。关闭静态 crt 后可正常产出动态库。
+# 与 resources-manager/.cargo/config.toml 保持一致（M6 打包需要）。
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]

@@ -1,0 +1,26 @@
+[package]
+name = "rmgr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "resources-manager 命令行（业务命令；宿主管理命令是 ling）"
+
+[[bin]]
+name = "rmgr"
+path = "src/main.rs"
+
+[dependencies]
+rm-proto = { path = "../../crates/rm-proto" }
+rm-catalog = { path = "../../crates/rm-catalog" }
+rm-scan = { path = "../../crates/rm-scan" }
+rm-dedup = { path = "../../crates/rm-dedup" }
+rm-semantic = { path = "../../crates/rm-semantic" }
+rm-classify = { path = "../../crates/rm-classify" }
+rm-sync = { path = "../../crates/rm-sync" }
+rm-fs = { path = "../../crates/rm-fs" }
+rm-transfer = { path = "../../crates/rm-transfer" }
+rm-store = { path = "../../crates/rm-store" }
+rm-backup = { path = "../../crates/rm-backup" }
+rm-ai = { path = "../../crates/rm-ai" }
+serde_json.workspace = true
+rusqlite.workspace = true

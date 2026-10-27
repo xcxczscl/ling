@@ -1,0 +1,21 @@
+[package]
+name = "rm-backup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "备份（M4）：段式备份/恢复/校验 + zstd + 占位加密（docs/03 §5.3）"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+rm-proto = { path = "../rm-proto" }
+rm-catalog = { path = "../rm-catalog" }
+rm-store = { path = "../rm-store" }
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+zstd = "0.14"
+
+[dev-dependencies]
+tempfile.workspace = true

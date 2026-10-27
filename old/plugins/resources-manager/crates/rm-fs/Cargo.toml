@@ -1,0 +1,13 @@
+[package]
+name = "rm-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "文件系统适配：目录遍历与平台差异屏蔽"
+
+[dependencies]
+file-id = "0.2"
+
+# 安卓 SAF 序列化（仅 android 目标编译）
+[target.'cfg(target_os = "android")'.dependencies]
+serde = { workspace = true, features = ["derive"] }

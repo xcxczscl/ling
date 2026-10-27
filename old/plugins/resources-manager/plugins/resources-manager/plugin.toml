@@ -1,0 +1,10 @@
+[plugin]
+id = "resources-manager"
+version = "0.1.0"
+api = "1"
+name = "资源管理"
+description = "多设备文件资源管理：扫描、查重、词条/版本/标签、分类规则"
+
+[requires]
+capabilities = ["fs"]
+plugins = []
