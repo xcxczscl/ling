@@ -58,7 +58,7 @@ old/       旧版本内容，只作参考
 按这个顺序：
 
 1. [`docs/common/00-文档编写规范.md`](docs/common/00-文档编写规范.md) — 文档怎么组织、怎么评审
-2. [`docs/common/01-术语表.md`](docs/common/01-术语表.md) — 统一名词【待建】
+2. [`docs/common/01-术语表.md`](docs/common/01-术语表.md) — 统一名词，含项目代号 LING / RM / PLR
 3. `docs/ling/00-总览与术语.md` — ling 是什么【待建】
 4. 后续按序号推进
 
