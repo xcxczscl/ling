@@ -34,18 +34,34 @@ def rel(path):
         return str(path)
 
 
+def content_lines(path):
+    """返回 (行号, 行内容)；代码块内的行内容为 None。
+
+    代码块里的 `# 注释` 不是 Markdown 标题，也不该参与措辞检查。
+    """
+    out = []
+    in_code = False
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            out.append((i, None))
+            continue
+        out.append((i, None if in_code else line))
+    return out
+
+
 def headings(path):
-    return [line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()
-            if HEADING.match(line)]
+    return [line.rstrip() for _, line in content_lines(path)
+            if line is not None and HEADING.match(line)]
 
 
 def check_tables(path):
     """同一表格块内每行的竖线数必须一致。"""
     problems = []
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = content_lines(path)
     block, start = [], 0
-    for i, line in enumerate(lines + [""], 1):
-        if line.lstrip().startswith("|"):
+    for i, line in lines + [(0, "")]:
+        if line is not None and line.lstrip().startswith("|"):
             if not block:
                 start = i
             block.append((i, line))
@@ -64,7 +80,9 @@ def check_banned(path):
     if "log" in Path(path).parts:
         return []
     problems = []
-    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for i, line in content_lines(path):
+        if line is None:
+            continue
         # 命中「禁用词清单」这一行本身是元引用，不算违规
         if "禁用词" in line or "禁令" in line or "替换办法" in line:
             continue
