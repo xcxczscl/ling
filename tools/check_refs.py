@@ -1,8 +1,8 @@
 """章节号引用校验：检查 `§X.Y` 是否真的指向目标文档里的某一节。
 
 用法：
-    python other/tools/check_refs.py            # 只报疑似错误
-    python other/tools/check_refs.py -v         # 连通过的也打印
+    python tools/check_refs.py            # 只报疑似错误
+    python tools/check_refs.py -v         # 连通过的也打印
 
 核心是「一个 § 该指向谁」的判定。按出现位置从左到右扫，
 每个 § 绑定到它**左边最近的**那一个文档指代：
@@ -28,7 +28,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 
 HEAD = re.compile(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\.?\s+(.*)$")
 

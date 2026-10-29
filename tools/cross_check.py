@@ -1,8 +1,8 @@
 """交叉比对：把「同一事实」在各文档里的取值摊出来，供人工核对。
 
 用法：
-    python other/tools/cross_check.py            # 全部检查项
-    python other/tools/cross_check.py port       # 只查某一项
+    python tools/cross_check.py            # 全部检查项
+    python tools/cross_check.py port       # 只查某一项
 
 设计原则：脚本不判断对错，只把取值与出处列出来。判断由人做，
 因为「7901 是端口顺延的例子」和「7910 是界面端口」都是合法取值，
@@ -14,7 +14,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 
 # 只查设计文档与根级说明；代码块内容一并查（命令行示例里的端口也要一致）
 def docs():

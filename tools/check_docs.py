@@ -2,8 +2,8 @@
 """文档一致性校验：两版标题对应、表格列数、禁用词、乱码。
 
 用法：
-    python other/tools/check_docs.py                 # 校验全部 docs/
-    python other/tools/check_docs.py <详细版> <简版>   # 只校验指定两份
+    python tools/check_docs.py                 # 校验全部 docs/
+    python tools/check_docs.py <详细版> <简版>   # 只校验指定两份
 
 退出码 0 表示全部通过，1 表示有问题。
 """
@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
 # 禁用词：只禁「列举未尽」的「等」，等待/等于/相等/等级不算
