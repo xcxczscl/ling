@@ -1,0 +1,20 @@
+# 格式化规则，依据 docs/ling/05-构造与开发指南.md §4.4。
+# 基调：4 空格缩进、列宽 100、左大括号不换行。
+# 格式由工具管，不靠人记；提交前 precommit 会跑 --dry-run 检查。
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++17
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AlignAfterOpenBracket: Align
+PointerAlignment: Left
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+Standard: c++17

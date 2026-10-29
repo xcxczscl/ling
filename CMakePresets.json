@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
@@ -18,7 +22,8 @@
       "description": "docs/ling/05-构造与开发指南.md §3.4",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "LING_PRESET": "win-debug"
+        "LING_PRESET": "win-debug",
+        "LING_SANITIZER": "ON"
       }
     },
     {
@@ -36,7 +41,8 @@
       "displayName": "Linux Debug（开发用）",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "LING_PRESET": "linux-debug"
+        "LING_PRESET": "linux-debug",
+        "LING_SANITIZER": "ON"
       }
     },
     {
@@ -60,10 +66,25 @@
     }
   ],
   "buildPresets": [
-    { "name": "win-debug", "configurePreset": "win-debug" },
-    { "name": "win-release", "configurePreset": "win-release" },
-    { "name": "linux-debug", "configurePreset": "linux-debug" },
-    { "name": "linux-release", "configurePreset": "linux-release" },
-    { "name": "android-release", "configurePreset": "android-release" }
+    {
+      "name": "win-debug",
+      "configurePreset": "win-debug"
+    },
+    {
+      "name": "win-release",
+      "configurePreset": "win-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "android-release",
+      "configurePreset": "android-release"
+    }
   ]
 }

@@ -13,6 +13,7 @@ target_include_directories(ling_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 ling_set_standard(ling_core)
 ling_set_warnings(ling_core)
 ling_set_hardening(ling_core)
+ling_set_sanitizer(ling_core)
 
 # 版本号来自顶层 CMakeLists，编进库里而不是让每个用到的地方自己拼。
 target_compile_definitions(ling_core PRIVATE LING_VERSION="${LING_VERSION}")
@@ -24,3 +25,4 @@ target_link_libraries(ling PRIVATE ling_core)
 ling_set_standard(ling)
 ling_set_warnings(ling)
 ling_set_hardening(ling)
+ling_set_sanitizer(ling)

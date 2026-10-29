@@ -43,3 +43,20 @@ function(ling_set_hardening target)
                                                   -fstack-protector-strong)
     endif()
 endfunction()
+
+# 消毒器，只在 Debug 开（docs/ling/05-构造与开发指南.md §4.2）。
+# Windows 的 MSVC 只有 ASan，没有 UBSan；Windows 上的未定义行为靠 Linux 侧同名测试兜住。
+function(ling_set_sanitizer target)
+    if(NOT LING_SANITIZER)
+        return()
+    endif()
+
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /fsanitize=address)
+        target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+    else()
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined
+                                                  -fno-sanitize-recover=all)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()

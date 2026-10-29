@@ -1,0 +1,13 @@
+# 静态分析规则，依据 docs/ling/05-构造与开发指南.md §4.3。
+# 只启用两组：bugprone 抓易错写法，cppcoreguidelines 抓所有权与生命周期。
+# 不启用 modernize（要求用没学过的特性）、不启用 readability（格式交给 clang-format）。
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'main/.*'
+FormatStyle: file
