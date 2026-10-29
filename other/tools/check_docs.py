@@ -97,6 +97,28 @@ def check_banned(path):
     return problems
 
 
+def check_blank_before_table(path):
+    """表格前必须是空行或另一个表格行。
+
+    GFM 的表格不能打断段落：紧跟在文字后面的 `| ... |` 会被当成普通文本，
+    在 GitHub 上整张表渲染不出来。这类错误肉眼扫不出来，只能由脚本查。
+    """
+    problems = []
+    lines = [None if line is None else line
+             for _, line in content_lines(path)]
+    for i in range(len(lines)):
+        line = lines[i]
+        if line is None or not line.lstrip().startswith("|"):
+            continue
+        prev = lines[i - 1] if i else None
+        # 代码块内的行 content_lines 已置 None，跳过
+        if prev is None:
+            continue
+        if prev.strip() and not prev.lstrip().startswith("|"):
+            problems.append(f"{rel(path)}:{i + 1} 表格前缺空行，GitHub 上不会渲染")
+    return problems
+
+
 def check_mojibake(path):
     text = path.read_text(encoding="utf-8")
     if "\ufffd" in text:
@@ -134,6 +156,7 @@ def main(argv):
                     problems += check_pair(detailed, f)
     for f in files:
         problems += check_tables(f)
+        problems += check_blank_before_table(f)
         problems += check_banned(f)
         problems += check_mojibake(f)
 
