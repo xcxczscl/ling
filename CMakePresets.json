@@ -1,0 +1,69 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/run/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "win-debug",
+      "inherits": "base",
+      "displayName": "Windows Debug（开发用）",
+      "description": "docs/ling/05-构造与开发指南.md §3.4",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LING_PRESET": "win-debug"
+      }
+    },
+    {
+      "name": "win-release",
+      "inherits": "base",
+      "displayName": "Windows Release（打包用）",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LING_PRESET": "win-release"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "base",
+      "displayName": "Linux Debug（开发用）",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LING_PRESET": "linux-debug"
+      }
+    },
+    {
+      "name": "linux-release",
+      "inherits": "base",
+      "displayName": "Linux Release（打包用）",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LING_PRESET": "linux-release"
+      }
+    },
+    {
+      "name": "android-release",
+      "inherits": "base",
+      "displayName": "Android Release（只出产物）",
+      "description": "需要 NDK 工具链文件，S6 打包时才接",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LING_PRESET": "android-release"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win-debug", "configurePreset": "win-debug" },
+    { "name": "win-release", "configurePreset": "win-release" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "android-release", "configurePreset": "android-release" }
+  ]
+}
