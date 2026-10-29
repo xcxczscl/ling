@@ -231,7 +231,7 @@ ling uninstall demo-caller --purge
 | `docs/ling/05-构造与开发指南.md` §5 | S0–S2 三个切片的产物与验证方式 |
 | `docs/ling/07-测试与验收.md` §3.3、§4 | 夹具插件与用例编号 |
 | `docs/ling/04-详细设计/06-管理端口与命令行.md` §3.3 | 为什么命令行没有 `call` 子命令 |
-| `docs/common/02-版本号与兼容约定.md` §2.2 | `0.0.3-b1` 的由来 |
+| `docs/common/02-版本号与兼容约定.md` §2 | `0.0.3-b1` 的由来 |
 
 ## 变更记录
 
