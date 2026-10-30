@@ -4,6 +4,7 @@ include(${CMAKE_SOURCE_DIR}/tools/cmake/LingPlugin.cmake)
 
 add_ling_plugin(demo-a)
 add_ling_plugin(demo-caller)
+add_ling_plugin(demo-bench)
 
 # 内置插件：MVP 三个，core-ui 与 core-job 待 M5。
 add_ling_plugin(core-settings "${CMAKE_SOURCE_DIR}/main/builtin-plugins/core-settings")

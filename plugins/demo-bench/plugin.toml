@@ -1,0 +1,6 @@
+id = "demo-bench"
+version = "1.0.0"
+api = "1"
+name = "调用延迟基准"
+description = "激活时对 demo-a.ping 做 10 万次调用，输出 P50/P95/P99，供 l1_bench_call 采集"
+capabilities = []

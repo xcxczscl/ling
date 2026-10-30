@@ -184,7 +184,10 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     }
 
     ling::AdminServer server(&kernel);
-    const std::string error = server.start(args.port, 7999);
+    // 从 --port 起向上找，验收脚本用 8020 起的段也一样适用。
+    const std::uint16_t last_port =
+        static_cast<std::uint16_t>(args.port + (args.port < 8000 ? 99 : 79));
+    const std::string error = server.start(args.port, last_port);
     if (!error.empty()) {
         std::fprintf(stderr, "启动失败：%s\n", error.c_str());
         return 3;

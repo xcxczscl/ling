@@ -405,6 +405,10 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    Loa
         }
         std::filesystem::remove_all(entry.path(), ec);
     }
+    // --purge 连目录本身一起删掉；不带 purge 时目录要留着装 data/。
+    if (purge) {
+        std::filesystem::remove_all(dir, ec);
+    }
 
     log_info("loader", std::string("已卸载 ") + plugin_id + (purge ? "（含数据）" : "（保留数据）"));
 

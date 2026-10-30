@@ -2,9 +2,9 @@
 
 > 零内容的插件宿主：本身不提供任何功能，全部实用功能由插件提供。给自己用的单机工具。
 
-> 当前阶段：**M1 实现中**（设计已定稿，代码按切片推进到管理端口）
+> 当前阶段：**MVP 已交付**（M1 + M2）
 >
-> 当前版本：**`0.0.1-b1`**（版本规则见 [`docs/common/02-版本号与兼容约定.md`](docs/common/02-版本号与兼容约定.md)）
+> 当前版本：**`0.0.3-b1`**（版本规则见 [`docs/common/02-版本号与兼容约定.md`](docs/common/02-版本号与兼容约定.md)）
 
 ---
 
@@ -27,22 +27,29 @@ ling 是一个插件宿主程序。它自己不实现任何业务功能，只提
 
 ## 现在到哪一步
 
-**M0 设计定稿已通过，M1 实现中**：22 份设计文档全部为**已定稿**（`0.0.1-b1`）。里程碑与每段标准见 [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md)。
+**M0 设计定稿已通过，MVP（M1 + M2）已交付**：22 份设计文档全部为**已定稿**。MVP 的判定与演示记录见 [`docs/log/032-MVP交付.md`](docs/log/032-MVP交付.md)，里程碑划分见 [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md)。
 
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
-| ling 宿主（`main/`） | 已定稿（00–11 共 18 份；12 用户手册待补齐） | 装、卸、调用、撤销、事件广播、管理端口与 `serve`/`shutdown` 已通过；内置插件未做 |
-| 插件（`plugins/`） | 未开始 | `demo-a`、`demo-caller` 两个示例可用 |
+| ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
+| 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log` 三个 |
+| 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench` |
 
-能跑通的最短路径：
+MVP 能跑通的最短路径：
 
 ```bash
 ling serve                          # 前台起宿主，管理端口 127.0.0.1:7900
 ling install <目录>/plugins/demo-a
 ling install <目录>/plugins/demo-caller
-ling plugins                        # 两个都是 activated
+ling plugins                        # 五个 activated（三个内置加两个示例）
 ling logs demo-caller               # 看到 event demo-a.pinged pong 与 reply=pong
 ling shutdown
+```
+
+验收与基准：
+
+```bash
+python tests/acceptance/acceptance.py --script all --preset win-release
 ```
 
 技术栈（见 [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，首版 core-ui 用 C++ 写成独立可执行文件。
