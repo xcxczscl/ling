@@ -143,11 +143,12 @@ int32_t host_emit(void* ctx, const char* topic, const uint8_t* payload, size_t l
 }
 
 int32_t host_write_config(void* ctx, const char* key, const uint8_t* value, size_t len) {
-    (void)ctx;
-    (void)key;
-    (void)value;
-    (void)len;
-    return 3;  // 由 core-settings 提供，M6 之前不接
+    auto* context = static_cast<PluginContext*>(ctx);
+    if (context == nullptr || key == nullptr) {
+        return 1;
+    }
+    const std::string code = context->kernel->write_config(context->plugin_id, key, value, len);
+    return code.empty() ? 0 : 2;
 }
 
 const char* host_data_dir(void* ctx) {
@@ -258,6 +259,13 @@ void Kernel::load_registry() {
                 }
             }
         }
+        if (document.contains("removed_builtins") && document["removed_builtins"].is_array()) {
+            for (const auto& item : document["removed_builtins"]) {
+                if (item.is_string()) {
+                    removed_builtins_.push_back(item.get<std::string>());
+                }
+            }
+        }
     } catch (const std::exception& error) {
         // 配置坏了不阻塞启动：记一条 warn，按「没有停用记录」继续。
         log_warn("registry", std::string("registry.json 解析失败，按空配置继续：") + error.what());
@@ -268,6 +276,7 @@ void Kernel::save_registry() const {
     nlohmann::json document;
     document["schema_version"] = 1;
     document["disabled"] = disabled_;
+    document["removed_builtins"] = removed_builtins_;
     if (admin_port_ != 0) {
         document["port"] = admin_port_;
     }
@@ -345,8 +354,7 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
     return {};
 }
 
-std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
-    LoadedPlugin* plugin = find(plugin_id);
+std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    LoadedPlugin* plugin = find(plugin_id);
     if (plugin != nullptr) {
         const bool was_activated = plugin->state == PluginState::kActivated;
         if (was_activated) {
@@ -399,7 +407,46 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
     }
 
     log_info("loader", std::string("已卸载 ") + plugin_id + (purge ? "（含数据）" : "（保留数据）"));
+
+    // 用户主动卸掉的内置插件不再自动装回（04/07 §8.3 第三条）。
+    if (plugin_id.rfind("core-", 0) == 0 &&
+        std::find(removed_builtins_.begin(), removed_builtins_.end(), plugin_id) ==
+            removed_builtins_.end()) {
+        removed_builtins_.push_back(plugin_id);
+        save_registry();
+    }
     return {};
+}
+
+std::size_t Kernel::install_builtins(const std::filesystem::path& program_dir) {
+    static const char* const kBuiltins[] = {"core-settings", "core-plugin-manager", "core-log"};
+    std::size_t installed = 0;
+    for (const char* id : kBuiltins) {
+        std::error_code ec;
+        if (std::filesystem::exists(plugins_dir() / id / "plugin.toml", ec)) {
+            continue;  // 已安装
+        }
+        if (std::find(removed_builtins_.begin(), removed_builtins_.end(), id) !=
+            removed_builtins_.end()) {
+            log_info("builtin", std::string(id) + " 曾被用户卸载，不再自动安装");
+            continue;
+        }
+        const auto source = program_dir / "plugins" / id;
+        if (!std::filesystem::exists(source / "plugin.toml", ec)) {
+            log_warn("builtin", std::string("找不到内置插件产物 ") + source.string());
+            continue;
+        }
+        const std::string code = install(source);
+        if (!code.empty()) {
+            log_warn("builtin", std::string("安装 ") + id + " 失败：" + code);
+            continue;
+        }
+        ++installed;
+    }
+    if (installed > 0) {
+        log_info("builtin", "预装内置插件 " + std::to_string(installed) + " 个");
+    }
+    return installed;
 }
 
 std::size_t Kernel::load_all() {
@@ -692,6 +739,26 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "插件 " + id + " 没有数据目录";
             return reply;
         }
+        // core-log 在时优先问它（04/06 §5.5 的第一条路径），不在时退回读 data/ 下的 .log。
+        if (find("core-log") != nullptr && router_.contains("core-log.tail")) {
+            nlohmann::json request;
+            request["plugin"] = id;
+            request["n"] = 40;
+            const std::string text = request.dump();
+            const CallOutcome outcome = call("core-log.tail",
+                                             reinterpret_cast<const std::uint8_t*>(text.data()),
+                                             text.size());
+            if (outcome.ok()) {
+                const std::string tail_text(outcome.data.begin(), outcome.data.end());
+                const auto parsed = nlohmann::json::parse(tail_text, nullptr, false);
+                // core-log 里没有这个插件的记录时退回 data/，不然「日志为空」会被当成真的没有。
+                if (!parsed.is_discarded() && parsed.contains("lines") &&
+                    !parsed["lines"].empty()) {
+                    reply.result = tail_text;
+                    return reply;
+                }
+            }
+        }
         // 取数据目录下最新的 .log 文件；没有就用空列表，不报错。
         std::filesystem::path latest;
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
@@ -887,8 +954,84 @@ std::string Kernel::on_unsubscribe(PluginContext* ctx, std::uint64_t sub_id) {
     return events_.unsubscribe(ctx->plugin_id, sub_id);
 }
 
-EmitStats Kernel::emit_from(const std::string& plugin_id, const std::string& topic,
-                            const std::uint8_t* payload, std::size_t len) {
+std::string Kernel::apply_config(const std::string& plugin_id, const std::string& key,
+                                 const std::string& value_json) {
+    nlohmann::json request;
+    request["plugin"] = plugin_id;
+    request["key"] = key;
+    request["value"] = nlohmann::json::parse(value_json, nullptr, false);
+    if (request["value"].is_discarded()) {
+        request["value"] = value_json;  // 不是合法 JSON 就当字符串存
+    }
+
+    const std::string text = request.dump();
+    const CallOutcome outcome = call("core-settings.write",
+                                     reinterpret_cast<const std::uint8_t*>(text.data()),
+                                     text.size());
+    if (!outcome.ok()) {
+        // core-settings 没装时给出明确错误码：配置是它提供的服务。
+        if (outcome.code == err::kMethodMissing) {
+            return err::kPluginMissing;
+        }
+        return outcome.code;
+    }
+    return {};
+}
+
+std::string Kernel::write_config(const std::string& plugin_id, const std::string& key,
+                                 const std::uint8_t* value, std::size_t len) {
+    const std::string prefix = plugin_id + ".";
+    if (key.rfind(prefix, 0) != 0) {
+        return err::kNamespaceViolation;
+    }
+    if (len > EventBus::kMaxPayloadBytes) {
+        return err::kPayloadTooLarge;
+    }
+    LoadedPlugin* plugin = find(plugin_id);
+    if (plugin == nullptr || plugin->state != PluginState::kActivated) {
+        return err::kPluginMissing;
+    }
+
+    const std::string raw(reinterpret_cast<const char*>(value), len);
+
+    // 先读旧值：撤销时按它写回，原本没有就删键。
+    nlohmann::json get_request;
+    get_request["key"] = key;
+    const std::string get_text = get_request.dump();
+    const CallOutcome previous = call("core-settings.get",
+                                      reinterpret_cast<const std::uint8_t*>(get_text.data()),
+                                      get_text.size());
+    std::string old_json = "null";
+    if (previous.ok()) {
+        const auto parsed = nlohmann::json::parse(
+            std::string(previous.data.begin(), previous.data.end()), nullptr, false);
+        if (!parsed.is_discarded() && parsed.contains("found") && parsed["found"].get<bool>()) {
+            old_json = parsed["value"].dump();
+        }
+    } else if (previous.code == err::kMethodMissing) {
+        return err::kPluginMissing;
+    }
+
+    const std::string code = apply_config(plugin_id, key, raw);
+    if (!code.empty()) {
+        return code;
+    }
+
+    Effect effect;
+    effect.kind = EffectKind::kConfigWrite;
+    effect.detail = key;
+    effect.undo = [this, plugin_id, key, old_json]() {
+        return apply_config(plugin_id, key, old_json).empty();
+    };
+    if (!plugin->ledger.append(std::move(effect))) {
+        // 记账失败就把刚写的值也撤回去，别留下无主的配置。
+        apply_config(plugin_id, key, old_json);
+        return err::kLedgerFull;
+    }
+    return {};
+}
+
+EmitStats Kernel::emit_from(const std::string& plugin_id, const std::string& topic,                            const std::uint8_t* payload, std::size_t len) {
     EmitStats stats;
     // 第 1 条：主题形状。
     if (!valid_topic_shape(topic)) {

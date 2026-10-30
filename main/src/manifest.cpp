@@ -36,6 +36,9 @@ bool is_supported_api(const std::string& api) {
 
 bool has_leading_core(const std::string& id) { return id.rfind("core-", 0) == 0; }
 
+// 内置插件清单。MVP 只有三个，core-ui 与 core-job 待 M5 加回（11 §4.2 第三条）。
+constexpr const char* kBuiltinIds[] = {"core-settings", "core-plugin-manager", "core-log"};
+
 // 拆三段版本号，失败返回空。
 std::array<int, 3> split_version(const std::string& text) {
     std::array<int, 3> parts{-1, -1, -1};
@@ -199,8 +202,8 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
         return result;
     }
 
-    // MVP 阶段：内置前缀保留，普通插件不许用。
-    if (has_leading_core(manifest.id)) {
+    // core- 前缀保留给内置插件：表里的编号放行，表外的拒绝（04/07 §2.3）。
+    if (has_leading_core(manifest.id) && !is_builtin_plugin(manifest.id)) {
         result.code = err::kManifestInvalid;
         result.detail = "core- 前缀保留给内置插件";
         return result;
@@ -287,6 +290,15 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
     result.detail = "构建时未找到 toml.hpp";
     return result;
 #endif
+}
+
+bool is_builtin_plugin(const std::string& id) {
+    for (const char* builtin : kBuiltinIds) {
+        if (id == builtin) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace ling

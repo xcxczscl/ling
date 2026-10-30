@@ -1,0 +1,6 @@
+id = "core-plugin-manager"
+version = "1.0.0"
+api = "1"
+name = "插件管理器"
+description = "孤儿数据扫描与插件目录占用统计；依赖树与批量操作待依赖解析落地后补"
+capabilities = ["fs"]

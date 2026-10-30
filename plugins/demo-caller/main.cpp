@@ -7,6 +7,8 @@
 
 #include "ling/plugin_api.h"
 
+#include <nlohmann/json.hpp>
+
 namespace {
 
 const char* kLogName = "demo-caller.log";
@@ -46,6 +48,20 @@ void append_log(const std::string& line) {
     std::fputc('\n', file);
     std::fclose(file);
     std::printf("[demo-caller] %s\n", line.c_str());
+
+    // 同时交给 core-log（若它已激活）；调用失败说明它不在，忽略即可。
+    nlohmann::json request;
+    request["plugin"] = "demo-caller";
+    request["level"] = "info";
+    request["message"] = line;
+    const std::string text = request.dump();
+    uint8_t* out = nullptr;
+    size_t out_len = 0;
+    g_state.host->call(g_state.ctx, "core-log.write",
+                       reinterpret_cast<const uint8_t*>(text.data()), text.size(), &out, &out_len);
+    if (out != nullptr) {
+        g_state.host->free_buffer(g_state.ctx, out, out_len);
+    }
 }
 
 // 事件回调：主题与载荷一起打印，验证进程内轨道确实把主题传了过来。

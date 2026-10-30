@@ -171,11 +171,13 @@ BOOL WINAPI on_console_ctrl(DWORD type) {
 }
 #endif
 
-int run_serve(const Args& args) {
+int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 #ifdef _WIN32
     ::SetConsoleCtrlHandler(on_console_ctrl, TRUE);
 #endif
     ling::Kernel kernel(args.data_dir);
+    // 先预装内置插件，再统一装载（04/07 §8.3）。
+    kernel.install_builtins(program_dir);
     const std::size_t failures = kernel.load_all();
     if (failures > 0) {
         std::fprintf(stderr, "提示：%zu 个插件激活失败，见日志\n", failures);
@@ -247,7 +249,11 @@ int main(int argc, char** argv) {
     }
 
     if (args.command == "serve") {
-        return run_serve(args);
+        // 内置插件的产物在 <程序目录>/plugins/ 下，serve 用这个位置做首次预装。
+        std::error_code ec;
+        const auto program_dir =
+            std::filesystem::absolute(std::filesystem::path(argv[0]), ec).parent_path();
+        return run_serve(args, ec ? std::filesystem::current_path() : program_dir);
     }
     if (args.command == "logs" && args.positional.empty()) {
         return print_kernel_logs(args.data_dir);

@@ -1,0 +1,6 @@
+id = "core-settings"
+version = "1.0.0"
+api = "1"
+name = "配置存储"
+description = "为其他插件提供键值配置的读写、列举与导出，键空间按插件编号前缀隔离"
+capabilities = ["fs"]

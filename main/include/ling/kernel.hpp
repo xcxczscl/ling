@@ -84,6 +84,10 @@ public:
     // 管理端口启动后写进 registry.json，供命令行找端口。
     void note_admin_port(std::uint16_t port);
 
+    // 预装内置插件：从 <程序目录>/plugins/<编号> 复制到数据根，已装或用户主动卸过的跳过。
+    // 返回实际安装的个数。
+    std::size_t install_builtins(const std::filesystem::path& program_dir);
+
     const std::vector<LoadedPlugin>& plugins() const { return plugins_; }
     const Router& router() const { return router_; }
     const EventBus& events() const { return events_; }
@@ -105,6 +109,10 @@ public:
                              std::uint64_t* out_sub_id);
     std::string on_unsubscribe(PluginContext* ctx, std::uint64_t sub_id);
 
+    // 配置写入：先记旧值入账，再转给 core-settings 落盘（04/03 §6.2、04/07 §4.3）。
+    std::string write_config(const std::string& plugin_id, const std::string& key,
+                             const std::uint8_t* value, std::size_t len);
+
 private:
     LoadedPlugin* find(const std::string& plugin_id);
     std::string activate(LoadedPlugin& plugin);
@@ -116,12 +124,17 @@ private:
                        const std::string& reason = {});
     // 内核自身发出的广播，跳过插件前缀校验。
     EmitStats emit_kernel(const std::string& topic, const std::string& payload);
+    // 把一次配置写入交给 core-settings。value_json 是 JSON 文本，"null" 表示删键。
+    std::string apply_config(const std::string& plugin_id, const std::string& key,
+                             const std::string& value_json);
 
     void load_registry();
     void save_registry() const;
 
     std::filesystem::path data_root_;
     std::vector<std::string> disabled_;
+    // 用户主动卸掉的内置插件，升级时不再自动装回（04/07 §8.3）。
+    std::vector<std::string> removed_builtins_;
     Router router_;
     EventBus events_;
     std::vector<LoadedPlugin> plugins_;

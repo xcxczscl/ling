@@ -48,4 +48,7 @@ bool valid_plugin_id(const std::string& id);
 bool valid_version(const std::string& version);          // 三段式，每段 0 至 65535
 bool version_at_least(const std::string& candidate, const std::string& required);
 
+// 内置插件编号表（04/07 §2.1）。core- 前缀保留给这张表里的编号。
+bool is_builtin_plugin(const std::string& id);
+
 }  // namespace ling

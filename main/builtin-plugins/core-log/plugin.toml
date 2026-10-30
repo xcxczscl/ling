@@ -1,0 +1,6 @@
+id = "core-log"
+version = "1.0.0"
+api = "1"
+name = "日志收集"
+description = "把插件日志写入 <数据根>/logs/<编号>-日期.log，并提供 tail 与 query"
+capabilities = ["fs"]
