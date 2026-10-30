@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "ling/ledger.hpp"
 #include "ling/manifest.hpp"
 #include "ling/plugin_api.h"
 #include "ling/router.hpp"
@@ -26,6 +27,7 @@ struct LoadedPlugin {
     PluginState state = PluginState::kInstalled;
     std::uint64_t generation = 0;  // 每次装载递增，用于旧回调拦截
     std::string last_error;
+    Ledger ledger;                 // 本插件本代的效应，停用时倒序撤销
 };
 
 // 插件上下文：宿主交给插件的那块数据，所有回调都从它反查归属。
@@ -50,8 +52,13 @@ public:
     // 安装：校验来源目录的清单，整目录复制到 plugins/<id>/。不建符号链接。
     std::string install(const std::filesystem::path& source_dir);
 
-    // 卸载：注销全部方法、卸载动态库、删除安装工件，保留 data/ 除非 purge。
+    // 卸载：倒序撤销账本、卸载动态库、删除安装工件，保留 data/ 除非 purge。
+    // 撤销有失败时返回 E_UNINSTALL_INCOMPLETE，且不删除任何文件（留下残件让人处理）。
     std::string uninstall(const std::string& plugin_id, bool purge);
+
+    // 启用/停用。停用的插件记进 registry.json 的 disabled 列表，下次启动不装载。
+    std::string set_enabled(const std::string& plugin_id, bool enabled);
+    bool is_disabled(const std::string& plugin_id) const;
 
     // 扫描 plugins/ 下所有已安装插件并激活。返回失败数量。
     std::size_t load_all();
@@ -75,7 +82,11 @@ private:
     void deactivate(LoadedPlugin& plugin);
     ling_host_api make_host_api();
 
+    void load_registry();
+    void save_registry() const;
+
     std::filesystem::path data_root_;
+    std::vector<std::string> disabled_;
     Router router_;
     std::vector<LoadedPlugin> plugins_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;

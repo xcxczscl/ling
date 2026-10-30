@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,9 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  install <目录>      安装插件\n");
     std::fprintf(out, "  uninstall <编号>    卸载插件，--purge 连 data/ 一起删\n");
     std::fprintf(out, "  plugins             列出插件与状态\n");
+    std::fprintf(out, "  enable <编号>       启用插件\n");
+    std::fprintf(out, "  disable <编号>      停用插件，下次启动不装载\n");
+    std::fprintf(out, "  logs                打印当天内核日志的后 40 行\n");
     std::fprintf(out, "  --version           打印版本\n");
     std::fprintf(out, "  --help              打印本说明\n");
 }
@@ -125,17 +129,82 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if ((args.command == "enable" || args.command == "disable") && args.positional.size() == 1) {
+        ling::Kernel kernel(args.data_dir);
+        const std::string code =
+            kernel.set_enabled(args.positional[0], args.command == "enable");
+        if (!code.empty()) {
+            std::fprintf(stderr, "操作失败：%s\n", code.c_str());
+            return 1;
+        }
+        std::printf("%s %s\n", args.command == "enable" ? "已启用" : "已停用",
+                    args.positional[0].c_str());
+        return 0;
+    }
+
+    if (args.command == "logs") {
+        ling::Kernel kernel(args.data_dir);  // 构造时会初始化日志目录
+        const std::filesystem::path log_dir = args.data_dir / "logs";
+        std::filesystem::path latest;
+        std::error_code ec;
+        // 日志按天分文件，文件名里的日期可字典序比较，取最大的那个即最新。
+        for (const auto& entry : std::filesystem::directory_iterator(log_dir, ec)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const std::string name = entry.path().filename().string();
+            if (name.rfind("kernel-", 0) != 0) {
+                continue;
+            }
+            if (latest.empty() || name > latest.filename().string()) {
+                latest = entry.path();
+            }
+        }
+        if (latest.empty()) {
+            std::printf("还没有日志\n");
+            return 0;
+        }
+        std::ifstream input(latest);
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(input, line)) {
+            lines.push_back(line);
+        }
+        const std::size_t begin = lines.size() > 40 ? lines.size() - 40 : 0;
+        for (std::size_t i = begin; i < lines.size(); ++i) {
+            std::printf("%s\n", lines[i].c_str());
+        }
+        return 0;
+    }
+
     if (args.command == "plugins") {
         ling::Kernel kernel(args.data_dir);
         kernel.load_all();
         const auto& plugins = kernel.plugins();
-        if (plugins.empty()) {
-            std::printf("没有已安装的插件\n");
-            return 0;
-        }
+        std::size_t printed = 0;
+        // 已停用的插件不会进装载表，但它们确实装着，所以单独列一遍。
         for (const auto& plugin : plugins) {
             std::printf("%-24s %-10s %s\n", plugin.manifest.id.c_str(),
                         plugin.manifest.version.c_str(), ling::state_name(plugin.state));
+            ++printed;
+        }
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(kernel.plugins_dir(), ec)) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+            const std::string id = entry.path().filename().string();
+            if (!kernel.is_disabled(id)) {
+                continue;
+            }
+            if (!std::filesystem::exists(entry.path() / "plugin.toml")) {
+                continue;
+            }
+            std::printf("%-24s %-10s %s\n", id.c_str(), "-", "disabled");
+            ++printed;
+        }
+        if (printed == 0) {
+            std::printf("没有已安装的插件\n");
         }
         return 0;
     }

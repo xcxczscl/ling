@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <cstring>
 #include <vector>
 #include <memory>
@@ -11,6 +12,8 @@
 #include "ling/errors.hpp"
 #include "ling/log.hpp"
 #include "ling/version.hpp"
+
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -205,6 +208,7 @@ Kernel::Kernel(std::filesystem::path data_root) : data_root_(std::move(data_root
     std::error_code ec;
     std::filesystem::create_directories(plugins_dir(), ec);
     log_init(data_root_ / "logs");
+    load_registry();
     host_api_ = make_host_api();
     g_kernel = this;
     log_info("kernel", "数据根 " + data_root_.string());
@@ -228,6 +232,65 @@ LoadedPlugin* Kernel::find(const std::string& plugin_id) {
     return nullptr;
 }
 
+void Kernel::load_registry() {
+    const auto path = data_root_ / "registry.json";
+    std::ifstream input(path);
+    if (!input) {
+        return;
+    }
+    try {
+        nlohmann::json document;
+        input >> document;
+        if (document.contains("disabled") && document["disabled"].is_array()) {
+            for (const auto& item : document["disabled"]) {
+                if (item.is_string()) {
+                    disabled_.push_back(item.get<std::string>());
+                }
+            }
+        }
+    } catch (const std::exception& error) {
+        // 配置坏了不阻塞启动：记一条 warn，按「没有停用记录」继续。
+        log_warn("registry", std::string("registry.json 解析失败，按空配置继续：") + error.what());
+    }
+}
+
+void Kernel::save_registry() const {
+    nlohmann::json document;
+    document["schema_version"] = 1;
+    document["disabled"] = disabled_;
+
+    const auto path = data_root_ / "registry.json";
+    std::ofstream output(path, std::ios::trunc);
+    if (!output) {
+        log_error("registry", "无法写入 " + path.string());
+        return;
+    }
+    output << document.dump(2) << "\n";
+}
+
+bool Kernel::is_disabled(const std::string& plugin_id) const {
+    return std::find(disabled_.begin(), disabled_.end(), plugin_id) != disabled_.end();
+}
+
+std::string Kernel::set_enabled(const std::string& plugin_id, bool enabled) {
+    const auto dir = plugins_dir() / plugin_id;
+    if (!std::filesystem::exists(dir / "plugin.toml")) {
+        return std::string(err::kPluginMissing) + " " + plugin_id;
+    }
+
+    const auto it = std::find(disabled_.begin(), disabled_.end(), plugin_id);
+    if (enabled) {
+        if (it != disabled_.end()) {
+            disabled_.erase(it);
+        }
+    } else if (it == disabled_.end()) {
+        disabled_.push_back(plugin_id);
+    }
+    save_registry();
+    log_info("registry", plugin_id + (enabled ? " 已启用" : " 已停用"));
+    return {};
+}
+
 std::string Kernel::install(const std::filesystem::path& source_dir) {
     const ManifestResult parsed = load_manifest(source_dir, host_version_string());
     if (!parsed.ok()) {
@@ -238,15 +301,25 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
 
     const auto target = plugins_dir() / parsed.manifest->id;
     std::error_code ec;
-    if (std::filesystem::exists(target, ec)) {
+    // 判定口径见 04/02 §2.1：plugin.toml 存在才算已安装。
+    // 只剩 data/ 的目录算未安装，可以重装并沿用里面的数据。
+    if (std::filesystem::exists(target / "plugin.toml", ec)) {
         return std::string(err::kPluginExists) + " 已存在 " + target.string() + "，先卸载再装";
     }
 
-    std::filesystem::create_directories(target.parent_path(), ec);
-    std::filesystem::copy(source_dir, target,
-                          std::filesystem::copy_options::recursive, ec);
-    if (ec) {
-        return std::string(err::kIo) + " 复制失败：" + ec.message();
+    std::filesystem::create_directories(target, ec);
+    // 逐个拷贝顶层条目，跳过 data/，避免把旧数据覆盖掉。
+    for (const auto& entry : std::filesystem::directory_iterator(source_dir, ec)) {
+        if (entry.path().filename() == "data") {
+            continue;
+        }
+        std::filesystem::copy(entry.path(), target / entry.path().filename(),
+                              std::filesystem::copy_options::recursive |
+                                  std::filesystem::copy_options::overwrite_existing,
+                              ec);
+        if (ec) {
+            return std::string(err::kIo) + " 复制失败：" + ec.message();
+        }
     }
 
     std::filesystem::create_directories(target / "data", ec);
@@ -258,7 +331,28 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
     LoadedPlugin* plugin = find(plugin_id);
     if (plugin != nullptr) {
         if (plugin->state == PluginState::kActivated) {
-            deactivate(*plugin);
+            const UndoReport report = plugin->ledger.undo_all();
+            if (report.failed > 0) {
+                // 撤销失败就不动文件：留下现场比删干净更有用。
+                std::string detail = std::string(err::kUninstallIncomplete) + " 有 " +
+                                     std::to_string(report.failed) + " 条效应撤销失败：";
+                for (const auto& item : report.failed_items) {
+                    detail += item + " ";
+                }
+                log_error("loader", plugin_id + " " + detail);
+                return detail;
+            }
+            const auto removed = router_.unregister_all(plugin_id);
+            if (!removed.empty()) {
+                log_warn("loader", plugin_id + " 账本外残留方法 " +
+                                       std::to_string(removed.size()) + " 个，已强制清空");
+            }
+            if (plugin->module != nullptr) {
+                unload_library(plugin->module);
+                plugin->module = nullptr;
+            }
+            plugin->handle = nullptr;
+            plugin->state = PluginState::kInstalled;
         }
         plugins_.erase(plugins_.begin() + (plugin - plugins_.data()));
         contexts_.erase(plugin_id);
@@ -300,6 +394,10 @@ std::size_t Kernel::load_all() {
     for (const auto& dir : dirs) {
         if (!std::filesystem::exists(dir / "plugin.toml")) {
             continue;  // 只剩 data/ 的目录算未安装
+        }
+        if (is_disabled(dir.filename().string())) {
+            log_info("loader", dir.filename().string() + " 已停用，跳过装载");
+            continue;
         }
         const ManifestResult parsed = load_manifest(dir, host_version_string());
         if (!parsed.ok()) {
@@ -371,10 +469,16 @@ std::string Kernel::activate(LoadedPlugin& plugin) {
 }
 
 void Kernel::deactivate(LoadedPlugin& plugin) {
+    const UndoReport report = plugin.ledger.undo_all();
+    if (report.attempted > 0) {
+        log_info("loader", plugin.manifest.id + " 撤销效应 " + std::to_string(report.attempted) +
+                               " 条，失败 " + std::to_string(report.failed) + " 条");
+    }
+    // 账本撤销完还有残留方法（例如插件绕过 Context 直接注册的），兜底清掉。
     const auto removed = router_.unregister_all(plugin.manifest.id);
     if (!removed.empty()) {
-        log_info("loader", plugin.manifest.id + " 注销方法 " + std::to_string(removed.size()) +
-                               " 个");
+        log_warn("loader", plugin.manifest.id + " 账本外残留方法 " +
+                               std::to_string(removed.size()) + " 个，已强制清空");
     }
     if (plugin.module != nullptr) {
         unload_library(plugin.module);
@@ -401,7 +505,7 @@ void* Kernel::create_context(const std::string& plugin_id, std::uint64_t generat
 
 std::string Kernel::on_register(PluginContext* ctx, const std::string& name, void* fn,
                                 std::uint32_t requires_mask) {
-    const auto* plugin = find(ctx->plugin_id);
+    auto* plugin = find(ctx->plugin_id);
     if (plugin == nullptr || plugin->state != PluginState::kActivated) {
         return err::kPluginMissing;
     }
@@ -410,7 +514,25 @@ std::string Kernel::on_register(PluginContext* ctx, const std::string& name, voi
     if ((requires_mask & ~declared) != 0) {
         return err::kCapabilityDenied;
     }
-    return router_.register_method(ctx->plugin_id, name, fn, ctx, requires_mask);
+    const std::string code = router_.register_method(ctx->plugin_id, name, fn, ctx, requires_mask);
+    if (!code.empty()) {
+        return code;
+    }
+
+    // 记账：撤销动作是注销这个方法。捕获所需值，避免悬挂引用。
+    const std::string method_name = name;
+    const std::string plugin_id = ctx->plugin_id;
+    Effect effect;
+    effect.kind = EffectKind::kMethodRegistered;
+    effect.detail = method_name;
+    effect.undo = [this, plugin_id, method_name]() {
+        return router_.unregister_method(plugin_id, method_name).empty();
+    };
+    if (plugin != nullptr && !plugin->ledger.append(std::move(effect))) {
+        router_.unregister_method(ctx->plugin_id, name);
+        return err::kLedgerFull;
+    }
+    return {};
 }
 
 std::string Kernel::on_unregister(PluginContext* ctx, const std::string& name) {

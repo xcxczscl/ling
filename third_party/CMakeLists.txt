@@ -5,7 +5,8 @@ add_library(ling_toml INTERFACE)
 target_include_directories(ling_toml INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tomlplusplus)
 
 add_library(ling_json INTERFACE)
-target_include_directories(ling_json INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/nlohmann)
+# 包含根放到 third_party/，这样代码里写 <nlohmann/json.hpp>，升级时不用改 include。
+target_include_directories(ling_json INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Catch2 v3 的合并版：一个头文件加一个实现文件，编成静态库只编一次。
 add_library(ling_catch2 STATIC ${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp)

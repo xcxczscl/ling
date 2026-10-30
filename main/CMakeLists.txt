@@ -12,6 +12,7 @@ add_library(ling_core STATIC
     src/version.cpp
     src/manifest.cpp
     src/router.cpp
+    src/ledger.cpp
     src/kernel.cpp
     src/log.cpp
 )
@@ -22,7 +23,7 @@ target_include_directories(ling_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(ling_core PRIVATE
     LING_VERSION="${LING_VERSION}"
     LING_HAS_TOMLPP=1)
-target_link_libraries(ling_core PRIVATE ling_toml)
+target_link_libraries(ling_core PRIVATE ling_toml ling_json)
 
 ling_set_standard(ling_core)
 ling_set_warnings(ling_core)
