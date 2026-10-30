@@ -1,0 +1,6 @@
+id = "demo-caller"
+version = "1.0.0"
+api = "1"
+name = "调用方示例插件"
+description = "S1 用：激活时调 demo-a.ping，把结果打到 stdout，用于验证调用通路"
+capabilities = []

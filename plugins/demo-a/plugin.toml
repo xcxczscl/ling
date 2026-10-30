@@ -1,0 +1,6 @@
+id = "demo-a"
+version = "1.0.0"
+api = "1"
+name = "最小示例插件"
+description = "S1 用：注册一个方法 demo-a.ping，返回 pong"
+capabilities = []

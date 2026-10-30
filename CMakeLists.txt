@@ -28,7 +28,11 @@ set(LING_PLUGIN_OUTPUT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/tools/cmake")
 include(LingOptions)
 
-# S0 只建两个目标：内核静态库与命令行入口。插件目标从 S1 开始加。
+enable_testing()
+
+add_subdirectory(third_party)
 add_subdirectory(main)
+add_subdirectory(plugins)
+add_subdirectory(tests)
 
 message(STATUS "ling ${LING_VERSION} | preset=${LING_PRESET} | 输出目录=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
