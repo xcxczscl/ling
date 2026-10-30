@@ -27,12 +27,20 @@ extern "C" {
  *
  * 缓冲区归属（进程内轨道）：两侧共用同一个 /MD 运行时，所以统一用 malloc / free。
  * 插件用 malloc 申请 out，宿主拷走后 free；宿主给插件的缓冲区用 malloc 申请，
- * 插件用完调 free_buffer（宿主侧实现仍是 free）。S5 侧车轨道改走协议帧，不用这条。 */
+ * 插件用完调 free_buffer（宿主侧实现仍是 free）。S5 侧车轨道改走协议帧，不用这条。
+ *
+ * handler_ctx 是宿主的上下文句柄（context_alloc 的返回值），由宿主填入，
+ * 插件不必理解它、只需原样回传给宿主函数表里的其它函数。 */
 typedef int32_t (*ling_method_fn)(void* handler_ctx, const uint8_t* args, size_t args_len,
                                   uint8_t** out, size_t* out_len);
 
-/* 事件回调与撤销函数的签名。S1 只登记不使用。 */
-typedef int32_t (*ling_event_fn)(void* handler_ctx, const uint8_t* payload, size_t len);
+/* 事件回调与撤销函数。
+ *
+ * 回调第一个参数同样是宿主的上下文句柄；第二个是主题：进程内一个回调可以挂多个模式，
+ * 不给主题就分不清事件来自哪里，所以主题必须随载荷一起传入（04/02 §4.1）。
+ * 主题是 UTF-8，以 0 结尾。 */
+typedef int32_t (*ling_event_fn)(void* handler_ctx, const char* topic, const uint8_t* payload,
+                                 size_t len);
 typedef void (*ling_undo_fn)(void* undo_ctx);
 
 typedef struct {

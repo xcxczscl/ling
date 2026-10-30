@@ -13,6 +13,7 @@ add_library(ling_core STATIC
     src/manifest.cpp
     src/router.cpp
     src/ledger.cpp
+    src/event.cpp
     src/kernel.cpp
     src/log.cpp
 )

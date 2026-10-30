@@ -83,18 +83,23 @@ int32_t host_unregister_method(void* ctx, const char* name) {
 
 int32_t host_subscribe(void* ctx, const char* pattern, void* fn, void* undo_fn,
                        uint64_t* out_sub_id) {
-    (void)ctx;
-    (void)pattern;
-    (void)fn;
-    (void)undo_fn;
-    (void)out_sub_id;
-    return 3;  // 事件系统 S2 之后接入
+    auto* context = static_cast<PluginContext*>(ctx);
+    if (context == nullptr || pattern == nullptr) {
+        return 1;
+    }
+    (void)undo_fn;  // 撤销动作由宿主账本按 sub_id 生成，插件不必自带
+    const std::string code =
+        context->kernel->on_subscribe(context, pattern, fn, out_sub_id);
+    return code.empty() ? 0 : 2;
 }
 
 int32_t host_unsubscribe(void* ctx, uint64_t sub_id) {
-    (void)ctx;
-    (void)sub_id;
-    return 3;
+    auto* context = static_cast<PluginContext*>(ctx);
+    if (context == nullptr) {
+        return 1;
+    }
+    const std::string code = context->kernel->on_unsubscribe(context, sub_id);
+    return code.empty() ? 0 : 2;
 }
 
 int32_t host_call(void* ctx, const char* method, const uint8_t* args, size_t args_len,
@@ -125,11 +130,13 @@ int32_t host_call(void* ctx, const char* method, const uint8_t* args, size_t arg
 }
 
 int32_t host_emit(void* ctx, const char* topic, const uint8_t* payload, size_t len) {
-    (void)ctx;
-    (void)topic;
-    (void)payload;
-    (void)len;
-    return 3;  // 事件系统 S2 之后接入
+    auto* context = static_cast<PluginContext*>(ctx);
+    if (context == nullptr || topic == nullptr) {
+        return 1;
+    }
+    const EmitStats stats = context->kernel->emit_from(context->plugin_id, topic, payload, len);
+    // 越权、超限这类「一条都没发出去」的返回错误码；个别订阅者失败不影响返回值。
+    return stats.code.empty() ? 0 : 2;
 }
 
 int32_t host_write_config(void* ctx, const char* key, const uint8_t* value, size_t len) {
@@ -330,7 +337,8 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
 std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
     LoadedPlugin* plugin = find(plugin_id);
     if (plugin != nullptr) {
-        if (plugin->state == PluginState::kActivated) {
+        const bool was_activated = plugin->state == PluginState::kActivated;
+        if (was_activated) {
             const UndoReport report = plugin->ledger.undo_all();
             if (report.failed > 0) {
                 // 撤销失败就不动文件：留下现场比删干净更有用。
@@ -347,12 +355,19 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
                 log_warn("loader", plugin_id + " 账本外残留方法 " +
                                        std::to_string(removed.size()) + " 个，已强制清空");
             }
+            const auto patterns = events_.unsubscribe_all(plugin_id);
+            if (!patterns.empty()) {
+                log_warn("loader", plugin_id + " 账本外残留订阅 " +
+                                       std::to_string(patterns.size()) + " 条，已强制清空");
+            }
             if (plugin->module != nullptr) {
                 unload_library(plugin->module);
                 plugin->module = nullptr;
             }
             plugin->handle = nullptr;
             plugin->state = PluginState::kInstalled;
+            // 卸载只对外报一条 uninstalled：状态迁移不拆成 deactivated 加 uninstalled。
+            publish_state(*plugin, "uninstalled");
         }
         plugins_.erase(plugins_.begin() + (plugin - plugins_.data()));
         contexts_.erase(plugin_id);
@@ -417,7 +432,10 @@ std::size_t Kernel::load_all() {
             plugins_.back().state = PluginState::kFailed;
             plugins_.back().last_error = code;
             log_error("loader", plugins_.back().manifest.id + " 激活失败：" + code);
+            publish_state(plugins_.back(), "failed", code);
             ++failures;
+        } else {
+            publish_state(plugins_.back(), "activated");
         }
     }
     return failures;
@@ -469,6 +487,8 @@ std::string Kernel::activate(LoadedPlugin& plugin) {
 }
 
 void Kernel::deactivate(LoadedPlugin& plugin) {
+    // 对外状态在撤销开始前就变成 deactivated，撤销过程中的回调看到的是最终态。
+    publish_state(plugin, "deactivated");
     const UndoReport report = plugin.ledger.undo_all();
     if (report.attempted > 0) {
         log_info("loader", plugin.manifest.id + " 撤销效应 " + std::to_string(report.attempted) +
@@ -479,6 +499,11 @@ void Kernel::deactivate(LoadedPlugin& plugin) {
     if (!removed.empty()) {
         log_warn("loader", plugin.manifest.id + " 账本外残留方法 " +
                                std::to_string(removed.size()) + " 个，已强制清空");
+    }
+    const auto patterns = events_.unsubscribe_all(plugin.manifest.id);
+    if (!patterns.empty()) {
+        log_warn("loader", plugin.manifest.id + " 账本外残留订阅 " +
+                               std::to_string(patterns.size()) + " 条，已强制清空");
     }
     if (plugin.module != nullptr) {
         unload_library(plugin.module);
@@ -537,6 +562,96 @@ std::string Kernel::on_register(PluginContext* ctx, const std::string& name, voi
 
 std::string Kernel::on_unregister(PluginContext* ctx, const std::string& name) {
     return router_.unregister_method(ctx->plugin_id, name);
+}
+
+std::string Kernel::on_subscribe(PluginContext* ctx, const std::string& pattern, void* fn,
+                                 std::uint64_t* out_sub_id) {
+    auto* plugin = find(ctx->plugin_id);
+    if (plugin == nullptr || plugin->state != PluginState::kActivated) {
+        return err::kPluginMissing;
+    }
+
+    std::uint64_t sub_id = 0;
+    // 与方法回调一致：回调的第一个参数是宿主的上下文句柄，插件把它当作不透明值原样带回即可。
+    const std::string code = events_.subscribe(ctx->plugin_id, pattern, fn, ctx, &sub_id);
+    if (!code.empty()) {
+        return code;
+    }
+
+    const std::string plugin_id = ctx->plugin_id;
+    Effect effect;
+    effect.kind = EffectKind::kSubscribed;
+    effect.detail = pattern;
+    effect.undo = [this, plugin_id, sub_id]() {
+        return events_.unsubscribe(plugin_id, sub_id).empty();
+    };
+    if (!plugin->ledger.append(std::move(effect))) {
+        events_.unsubscribe(plugin_id, sub_id);
+        return err::kLedgerFull;
+    }
+
+    if (out_sub_id != nullptr) {
+        *out_sub_id = sub_id;
+    }
+    log_info("event", plugin_id + " 订阅 " + pattern + "（sub_id=" + std::to_string(sub_id) + "）");
+    return {};
+}
+
+std::string Kernel::on_unsubscribe(PluginContext* ctx, std::uint64_t sub_id) {
+    return events_.unsubscribe(ctx->plugin_id, sub_id);
+}
+
+EmitStats Kernel::emit_from(const std::string& plugin_id, const std::string& topic,
+                            const std::uint8_t* payload, std::size_t len) {
+    EmitStats stats;
+    // 第 1 条：主题形状。
+    if (!valid_topic_shape(topic)) {
+        stats.code = err::kNamespaceViolation;
+        log_warn("event", plugin_id + " 广播主题不合法：" + topic);
+        return stats;
+    }
+    // 第 2 条：只能在自己的前缀下广播，kernel. 保留给内核。
+    const std::string prefix = plugin_id + ".";
+    if (topic.rfind(prefix, 0) != 0 || topic.rfind("kernel.", 0) == 0) {
+        stats.code = err::kNamespaceViolation;
+        log_warn("event", plugin_id + " 越权广播 " + topic + "，已丢弃");
+        return stats;
+    }
+    // 第 3 条：载荷上限。
+    if (len > EventBus::kMaxPayloadBytes) {
+        stats.code = err::kPayloadTooLarge;
+        log_warn("event", plugin_id + " 广播 " + topic + " 的载荷 " + std::to_string(len) +
+                              " 字节，超过上限，已丢弃");
+        return stats;
+    }
+    return events_.dispatch(topic, payload, len);
+}
+
+EmitStats Kernel::emit_kernel(const std::string& topic, const std::string& payload) {
+    if (payload.size() > EventBus::kMaxPayloadBytes) {
+        EmitStats stats;
+        stats.code = err::kPayloadTooLarge;
+        log_warn("event", "内核事件 " + topic + " 超限，已丢弃");
+        return stats;
+    }
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(payload.data());
+    return events_.dispatch(topic, bytes, payload.size());
+}
+
+void Kernel::publish_state(const LoadedPlugin& plugin, const char* state,
+                           const std::string& reason) {
+    nlohmann::json payload;
+    payload["plugin_id"] = plugin.manifest.id;
+    payload["state"] = state;
+    payload["version"] = plugin.manifest.version;
+    payload["generation"] = plugin.generation;
+    if (!reason.empty()) {
+        payload["reason"] = reason;
+    }
+
+    const EmitStats stats = emit_kernel("kernel.plugin.state", payload.dump());
+    log_info("event", std::string("kernel.plugin.state ") + plugin.manifest.id + " " + state +
+                           "（订阅者 " + std::to_string(stats.recipients) + "）");
 }
 
 CallOutcome Kernel::call(const std::string& method, const std::uint8_t* args,

@@ -3,6 +3,7 @@ include_directories(${CMAKE_SOURCE_DIR}/main/include)
 add_executable(ling_unit
     unit/test_manifest.cpp
     unit/test_router.cpp
+    unit/test_event.cpp
 )
 
 target_link_libraries(ling_unit PRIVATE ling_core ling_catch2)

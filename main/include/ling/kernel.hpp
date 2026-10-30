@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "ling/event.hpp"
 #include "ling/ledger.hpp"
 #include "ling/manifest.hpp"
 #include "ling/plugin_api.h"
@@ -65,8 +66,13 @@ public:
 
     const std::vector<LoadedPlugin>& plugins() const { return plugins_; }
     const Router& router() const { return router_; }
+    const EventBus& events() const { return events_; }
 
     CallOutcome call(const std::string& method, const std::uint8_t* args, std::size_t len);
+
+    // 插件发起的广播：主题必须以本插件编号加点开头，且不得占用 kernel. 前缀。
+    EmitStats emit_from(const std::string& plugin_id, const std::string& topic,
+                        const std::uint8_t* payload, std::size_t len);
 
     // 为插件分配上下文，宿主函数表 context_alloc 的实现。
     void* create_context(const std::string& plugin_id, std::uint64_t generation);
@@ -75,6 +81,9 @@ public:
     std::string on_register(PluginContext* ctx, const std::string& name, void* fn,
                             std::uint32_t requires_mask);
     std::string on_unregister(PluginContext* ctx, const std::string& name);
+    std::string on_subscribe(PluginContext* ctx, const std::string& pattern, void* fn,
+                             std::uint64_t* out_sub_id);
+    std::string on_unsubscribe(PluginContext* ctx, std::uint64_t sub_id);
 
 private:
     LoadedPlugin* find(const std::string& plugin_id);
@@ -82,12 +91,19 @@ private:
     void deactivate(LoadedPlugin& plugin);
     ling_host_api make_host_api();
 
+    // 广播 kernel.plugin.state。state 取对外五个取值之一。
+    void publish_state(const LoadedPlugin& plugin, const char* state,
+                       const std::string& reason = {});
+    // 内核自身发出的广播，跳过插件前缀校验。
+    EmitStats emit_kernel(const std::string& topic, const std::string& payload);
+
     void load_registry();
     void save_registry() const;
 
     std::filesystem::path data_root_;
     std::vector<std::string> disabled_;
     Router router_;
+    EventBus events_;
     std::vector<LoadedPlugin> plugins_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;
     std::uint64_t next_generation_ = 1;
