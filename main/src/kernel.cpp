@@ -1,9 +1,12 @@
 #include "ling/kernel.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <memory>
 #include <system_error>
@@ -265,6 +268,9 @@ void Kernel::save_registry() const {
     nlohmann::json document;
     document["schema_version"] = 1;
     document["disabled"] = disabled_;
+    if (admin_port_ != 0) {
+        document["port"] = admin_port_;
+    }
 
     const auto path = data_root_ / "registry.json";
     std::ofstream output(path, std::ios::trunc);
@@ -273,6 +279,11 @@ void Kernel::save_registry() const {
         return;
     }
     output << document.dump(2) << "\n";
+}
+
+void Kernel::note_admin_port(std::uint16_t port) {
+    admin_port_ = port;
+    save_registry();
 }
 
 bool Kernel::is_disabled(const std::string& plugin_id) const {
@@ -441,8 +452,283 @@ std::size_t Kernel::load_all() {
     return failures;
 }
 
-std::string Kernel::activate(LoadedPlugin& plugin) {
-    const auto path = plugins_dir() / plugin.manifest.id / plugin.manifest.artifact;
+std::string Kernel::load_one(const std::string& plugin_id) {
+    if (find(plugin_id) != nullptr) {
+        return {};  // 已装载：幂等
+    }
+    const auto dir = plugins_dir() / plugin_id;
+    std::error_code ec;
+    if (!std::filesystem::exists(dir / "plugin.toml", ec)) {
+        return std::string(err::kPluginMissing) + " " + plugin_id;
+    }
+    if (is_disabled(plugin_id)) {
+        return std::string(err::kPluginMissing) + " " + plugin_id + " 已停用";
+    }
+    const ManifestResult parsed = load_manifest(dir, host_version_string());
+    if (!parsed.ok()) {
+        return parsed.code + " " + parsed.detail;
+    }
+
+    LoadedPlugin plugin;
+    plugin.manifest = *parsed.manifest;
+    plugin.generation = next_generation_++;
+    plugins_.push_back(std::move(plugin));
+
+    const std::string code = activate(plugins_.back());
+    if (!code.empty()) {
+        plugins_.back().state = PluginState::kFailed;
+        plugins_.back().last_error = code;
+        log_error("loader", plugins_.back().manifest.id + " 激活失败：" + code);
+        publish_state(plugins_.back(), "failed", code);
+        return code;
+    }
+    publish_state(plugins_.back(), "activated");
+    return {};
+}
+
+std::string Kernel::unload_one(const std::string& plugin_id) {
+    LoadedPlugin* plugin = find(plugin_id);
+    if (plugin == nullptr || plugin->state != PluginState::kActivated) {
+        return std::string(err::kPluginMissing) + " " + plugin_id + " 未激活";
+    }
+    deactivate(*plugin);
+    plugins_.erase(plugins_.begin() + (plugin - plugins_.data()));
+    contexts_.erase(plugin_id);
+    return {};
+}
+
+namespace {
+
+// 把最近 40 行读成 JSON 数组。日志按行追加，末尾没有换行也照收。
+nlohmann::json tail_lines(const std::filesystem::path& path, std::size_t limit) {
+    nlohmann::json lines = nlohmann::json::array();
+    std::ifstream input(path);
+    if (!input) {
+        return lines;
+    }
+    std::vector<std::string> collected;
+    std::string line;
+    while (std::getline(input, line)) {
+        collected.push_back(line);
+    }
+    const std::size_t begin = collected.size() > limit ? collected.size() - limit : 0;
+    for (std::size_t i = begin; i < collected.size(); ++i) {
+        lines.push_back(collected[i]);
+    }
+    return lines;
+}
+
+// 内核方法返回的字符串形如 "E_XXX 说明"，拆成错误码与说明两段。
+void fill_error(Kernel::KernelReply& reply, const std::string& text) {
+    const auto space = text.find(' ');
+    if (space == std::string::npos) {
+        reply.code = text;
+        reply.message = text;
+        return;
+    }
+    reply.code = text.substr(0, space);
+    reply.message = text.substr(space + 1);
+}
+
+std::string iso8601_now() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t stamp = std::chrono::system_clock::to_time_t(now);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &stamp);
+#else
+    localtime_r(&stamp, &local);
+#endif
+    char buffer[32] = {};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &local);
+    return buffer;
+}
+
+}  // namespace
+
+Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
+                                          const std::string& args_json) {
+    KernelReply reply;
+
+    nlohmann::json args = nlohmann::json::object();
+    if (!args_json.empty()) {
+        try {
+            args = nlohmann::json::parse(args_json);
+        } catch (const std::exception&) {
+            reply.code = err::kProtocol;
+            reply.message = "args 不是合法 JSON";
+            return reply;
+        }
+        if (!args.is_object()) {
+            reply.code = err::kProtocol;
+            reply.message = "args 必须是对象";
+            return reply;
+        }
+    }
+
+    const auto string_arg = [&args](const char* key) {
+        if (args.contains(key) && args[key].is_string()) {
+            return args[key].get<std::string>();
+        }
+        return std::string();
+    };
+
+    if (method == "kernel.plugins") {
+        nlohmann::json list = nlohmann::json::array();
+        for (const auto& plugin : plugins_) {
+            nlohmann::json item;
+            item["id"] = plugin.manifest.id;
+            item["version"] = plugin.manifest.version;
+            item["state"] = state_name(plugin.state);
+            item["track"] = "process";
+            if (!plugin.last_error.empty()) {
+                item["reason"] = plugin.last_error;
+            }
+            list.push_back(item);
+        }
+        // 已停用但还装着的插件不在装载表里，单独扫一遍目录补上。
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+            const std::string id = entry.path().filename().string();
+            if (find(id) != nullptr) {
+                continue;
+            }
+            if (!std::filesystem::exists(entry.path() / "plugin.toml", ec)) {
+                continue;
+            }
+            const ManifestResult parsed = load_manifest(entry.path(), host_version_string());
+            nlohmann::json item;
+            item["id"] = id;
+            item["version"] = parsed.ok() ? parsed.manifest->version : std::string();
+            item["state"] = "deactivated";
+            item["track"] = "process";
+            list.push_back(item);
+        }
+        nlohmann::json result;
+        result["plugins"] = list;
+        reply.result = result.dump();
+        return reply;
+    }
+
+    if (method == "kernel.install") {
+        const std::string path = string_arg("path");
+        if (path.empty()) {
+            reply.code = err::kIo;
+            reply.message = "缺少 path";
+            return reply;
+        }
+        const std::string code = install(path);
+        if (!code.empty()) {
+            fill_error(reply, code);
+            return reply;
+        }
+        // 安装完立刻装载并激活，命令行才能看到 activated。
+        const ManifestResult parsed = load_manifest(path, host_version_string());
+        const std::string id = parsed.ok() ? parsed.manifest->id : std::string();
+        const std::string load_code = id.empty() ? std::string() : load_one(id);
+        nlohmann::json result;
+        result["id"] = id;
+        result["state"] = load_code.empty() ? "activated" : "failed";
+        if (!load_code.empty()) {
+            result["reason"] = load_code;
+        }
+        reply.result = result.dump();
+        return reply;
+    }
+
+    if (method == "kernel.uninstall") {
+        const std::string id = string_arg("id");
+        if (id.empty()) {
+            reply.code = err::kPluginMissing;
+            reply.message = "缺少 id";
+            return reply;
+        }
+        const bool purge = args.contains("purge") && args["purge"].is_boolean() && args["purge"];
+        const std::string code = uninstall(id, purge);
+        if (!code.empty()) {
+            fill_error(reply, code);
+            return reply;
+        }
+        reply.result = "{\"id\":\"" + id + "\"}";
+        return reply;
+    }
+
+    if (method == "kernel.enable" || method == "kernel.disable") {
+        const std::string id = string_arg("id");
+        if (id.empty()) {
+            reply.code = err::kPluginMissing;
+            reply.message = "缺少 id";
+            return reply;
+        }
+        const bool enabled = method == "kernel.enable";
+        const std::string code = set_enabled(id, enabled);
+        if (!code.empty()) {
+            fill_error(reply, code);
+            return reply;
+        }
+        if (enabled) {
+            load_one(id);
+        } else {
+            unload_one(id);
+        }
+        reply.result = "{\"id\":\"" + id + "\"}";
+        return reply;
+    }
+
+    if (method == "kernel.logs") {
+        const std::string id = string_arg("plugin");
+        if (id.empty()) {
+            reply.code = err::kPluginMissing;
+            reply.message = "缺少 plugin";
+            return reply;
+        }
+        const auto dir = plugins_dir() / id / "data";
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec)) {
+            reply.code = err::kPluginMissing;
+            reply.message = "插件 " + id + " 没有数据目录";
+            return reply;
+        }
+        // 取数据目录下最新的 .log 文件；没有就用空列表，不报错。
+        std::filesystem::path latest;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            if (entry.path().extension() != ".log") {
+                continue;
+            }
+            if (latest.empty() ||
+                std::filesystem::last_write_time(entry, ec) >
+                    std::filesystem::last_write_time(latest, ec)) {
+                latest = entry.path();
+            }
+        }
+        nlohmann::json result;
+        result["plugin"] = id;
+        result["path"] = latest.empty() ? std::string() : latest.string();
+        result["lines"] = latest.empty() ? nlohmann::json::array() : tail_lines(latest, 40);
+        reply.result = result.dump();
+        return reply;
+    }
+
+    if (method == "kernel.shutdown") {
+        shutdown_requested_ = true;
+        reply.shutdown = true;
+        reply.result = "{\"stopping\":true}";
+        log_info("kernel", "收到 kernel.shutdown");
+        return reply;
+    }
+
+    reply.code = err::kMethodMissing;
+    reply.message = "没有这个方法：" + method;
+    return reply;
+}
+
+std::string Kernel::activate(LoadedPlugin& plugin) {    const auto path = plugins_dir() / plugin.manifest.id / plugin.manifest.artifact;
     plugin.module = load_library(path);
     if (plugin.module == nullptr) {
         return std::string(err::kIo) + " 无法装载 " + path.string();

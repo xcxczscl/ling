@@ -15,8 +15,15 @@ add_library(ling_core STATIC
     src/ledger.cpp
     src/event.cpp
     src/kernel.cpp
+    src/admin_server.cpp
+    src/admin_client.cpp
     src/log.cpp
 )
+
+# 管理端口用裸套接字，Windows 上必须显式链 ws2_32。
+if(WIN32)
+    target_link_libraries(ling_core PUBLIC ws2_32)
+endif()
 
 target_include_directories(ling_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -24,7 +31,7 @@ target_include_directories(ling_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(ling_core PRIVATE
     LING_VERSION="${LING_VERSION}"
     LING_HAS_TOMLPP=1)
-target_link_libraries(ling_core PRIVATE ling_toml ling_json)
+target_link_libraries(ling_core PUBLIC ling_toml ling_json)
 
 ling_set_standard(ling_core)
 ling_set_warnings(ling_core)

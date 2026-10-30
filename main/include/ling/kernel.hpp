@@ -64,6 +64,26 @@ public:
     // 扫描 plugins/ 下所有已安装插件并激活。返回失败数量。
     std::size_t load_all();
 
+    // 装载并激活一个已安装插件（管理端口的 install 用）。成功返回空。
+    std::string load_one(const std::string& plugin_id);
+
+    // 关掉一个已激活插件但保留安装工件（disable 用）。成功返回空。
+    std::string unload_one(const std::string& plugin_id);
+
+    // kernel.* 方法的分发入口。返回错误码为空表示成功，result 填 JSON 文本。
+    struct KernelReply {
+        std::string code;
+        std::string message;
+        std::string result;
+        bool shutdown = false;
+    };
+    KernelReply handle_kernel(const std::string& method, const std::string& args_json);
+
+    bool shutdown_requested() const { return shutdown_requested_; }
+
+    // 管理端口启动后写进 registry.json，供命令行找端口。
+    void note_admin_port(std::uint16_t port);
+
     const std::vector<LoadedPlugin>& plugins() const { return plugins_; }
     const Router& router() const { return router_; }
     const EventBus& events() const { return events_; }
@@ -107,6 +127,8 @@ private:
     std::vector<LoadedPlugin> plugins_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;
     std::uint64_t next_generation_ = 1;
+    std::uint16_t admin_port_ = 0;
+    bool shutdown_requested_ = false;
     ling_host_api host_api_{};
 };
 

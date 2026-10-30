@@ -1,6 +1,6 @@
-// 命令行入口。S1 提供 install / uninstall / plugins 三个子命令，
-// 其余（serve、enable、disable、logs、doctor）按 docs/ling/05-构造与开发指南.md §5.1
-// 的切片顺序后续补上。
+// 命令行入口。serve 之外的所有子命令都经管理端口走 kernel.* 方法（04/06 §4.1），
+// 只有 --version、--help 与 logs --kernel 在本地直接完成。
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -8,20 +8,32 @@
 #include <string>
 #include <vector>
 
+#include "ling/admin.hpp"
 #include "ling/kernel.hpp"
 #include "ling/version.hpp"
 
+#include <nlohmann/json.hpp>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace {
+
+std::atomic<bool> g_stop_requested{false};
 
 void print_usage(std::FILE* out) {
     std::fprintf(out, "ling %s\n", ling::version_string());
-    std::fprintf(out, "用法：ling <子命令> [选项] [--data-dir <路径>]\n");
-    std::fprintf(out, "  install <目录>      安装插件\n");
-    std::fprintf(out, "  uninstall <编号>    卸载插件，--purge 连 data/ 一起删\n");
+    std::fprintf(out, "用法：ling <子命令> [选项] [--data-dir <路径>] [--json]\n");
+    std::fprintf(out, "  serve               前台启动宿主，监听 127.0.0.1:7900 起\n");
+    std::fprintf(out, "  shutdown            让运行中的宿主退出\n");
     std::fprintf(out, "  plugins             列出插件与状态\n");
+    std::fprintf(out, "  install <目录>      安装并激活插件\n");
+    std::fprintf(out, "  uninstall <编号>    卸载插件，--purge 连 data/ 一起删\n");
     std::fprintf(out, "  enable <编号>       启用插件\n");
-    std::fprintf(out, "  disable <编号>      停用插件，下次启动不装载\n");
-    std::fprintf(out, "  logs                打印当天内核日志的后 40 行\n");
+    std::fprintf(out, "  disable <编号>      停用插件\n");
+    std::fprintf(out, "  logs [编号]         不带编号时打印内核日志末 40 行\n");
     std::fprintf(out, "  --version           打印版本\n");
     std::fprintf(out, "  --help              打印本说明\n");
 }
@@ -65,7 +77,130 @@ struct Args {
     std::vector<std::string> positional;
     std::filesystem::path data_dir;
     bool purge = false;
+    bool json = false;
+    std::uint16_t port = 7900;
 };
+
+// 打印内核日志末 40 行。这条路径不依赖任何插件（LING-REQ-077、LING-REQ-119）。
+int print_kernel_logs(const std::filesystem::path& data_dir) {
+    const auto log_dir = data_dir / "logs";
+    std::filesystem::path latest;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(log_dir, ec)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("kernel-", 0) != 0) {
+            continue;
+        }
+        // 日志按天分文件，文件名里的日期可字典序比较，取最大的那个即最新。
+        if (latest.empty() || name > latest.filename().string()) {
+            latest = entry.path();
+        }
+    }
+    if (latest.empty()) {
+        std::printf("还没有日志\n");
+        return 0;
+    }
+    std::ifstream input(latest);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line)) {
+        lines.push_back(line);
+    }
+    const std::size_t begin = lines.size() > 40 ? lines.size() - 40 : 0;
+    for (std::size_t i = begin; i < lines.size(); ++i) {
+        std::printf("%s\n", lines[i].c_str());
+    }
+    return 0;
+}
+
+void print_plugins(const std::string& result_json) {
+    const auto document = nlohmann::json::parse(result_json, nullptr, false);
+    if (document.is_discarded() || !document.contains("plugins")) {
+        std::printf("%s\n", result_json.c_str());
+        return;
+    }
+    for (const auto& plugin : document["plugins"]) {
+        std::printf("%-24s %-10s %-12s %s", plugin.value("id", "").c_str(),
+                    plugin.value("version", "").c_str(), plugin.value("state", "").c_str(),
+                    plugin.value("track", "").c_str());
+        if (plugin.contains("reason")) {
+            std::printf("  %s", plugin.value("reason", "").c_str());
+        }
+        std::printf("\n");
+    }
+}
+
+void print_log_lines(const std::string& result_json) {
+    const auto document = nlohmann::json::parse(result_json, nullptr, false);
+    if (document.is_discarded() || !document.contains("lines")) {
+        std::printf("%s\n", result_json.c_str());
+        return;
+    }
+    if (document["lines"].empty()) {
+        std::printf("没有日志（%s）\n", document.value("path", "").c_str());
+        return;
+    }
+    for (const auto& line : document["lines"]) {
+        std::printf("%s\n", line.get<std::string>().c_str());
+    }
+}
+
+// 把错误类别映射成退出码（04/06 §4.2）。
+int exit_code_of(const ling::AdminReply& reply) {
+    switch (reply.kind) {
+        case ling::AdminReply::Kind::kOk:
+            return 0;
+        case ling::AdminReply::Kind::kUnreachable:
+            return 3;
+        case ling::AdminReply::Kind::kAuth:
+        case ling::AdminReply::Kind::kRemote:
+        case ling::AdminReply::Kind::kProtocol:
+            return 4;
+    }
+    return 4;
+}
+
+#ifdef _WIN32
+BOOL WINAPI on_console_ctrl(DWORD type) {
+    (void)type;
+    g_stop_requested.store(true);
+    return TRUE;
+}
+#endif
+
+int run_serve(const Args& args) {
+#ifdef _WIN32
+    ::SetConsoleCtrlHandler(on_console_ctrl, TRUE);
+#endif
+    ling::Kernel kernel(args.data_dir);
+    const std::size_t failures = kernel.load_all();
+    if (failures > 0) {
+        std::fprintf(stderr, "提示：%zu 个插件激活失败，见日志\n", failures);
+    }
+
+    ling::AdminServer server(&kernel);
+    const std::string error = server.start(args.port, 7999);
+    if (!error.empty()) {
+        std::fprintf(stderr, "启动失败：%s\n", error.c_str());
+        return 3;
+    }
+
+    std::printf("ling %s 已启动，管理端口 127.0.0.1:%u，数据根 %s\n", ling::version_string(),
+                static_cast<unsigned>(server.port()), args.data_dir.string().c_str());
+    std::fflush(stdout);
+
+    while (!g_stop_requested.load()) {
+        if (!server.poll(200)) {
+            break;
+        }
+    }
+    server.stop();
+    std::printf("宿主已退出\n");
+    return 0;
+}
 
 }  // namespace
 
@@ -87,8 +222,16 @@ int main(int argc, char** argv) {
             args.data_dir = argv[++i];
             continue;
         }
+        if (token == "--port" && i + 1 < argc) {
+            args.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
+            continue;
+        }
         if (token == "--purge") {
             args.purge = true;
+            continue;
+        }
+        if (token == "--json") {
+            args.json = true;
             continue;
         }
         if (args.command.empty()) {
@@ -103,112 +246,80 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    if (args.command == "install" && args.positional.size() == 1) {
-        ling::Kernel kernel(args.data_dir);
-        if (kernel.load_all() != 0) {
-            std::fprintf(stderr, "提示：部分已装插件激活失败，见日志\n");
-        }
-        const std::string code = kernel.install(args.positional[0]);
-        if (!code.empty()) {
-            std::fprintf(stderr, "安装失败：%s\n", code.c_str());
-            return 1;
-        }
-        std::printf("已安装 %s\n", args.positional[0].c_str());
-        return 0;
+    if (args.command == "serve") {
+        return run_serve(args);
+    }
+    if (args.command == "logs" && args.positional.empty()) {
+        return print_kernel_logs(args.data_dir);
     }
 
-    if (args.command == "uninstall" && args.positional.size() == 1) {
-        ling::Kernel kernel(args.data_dir);
-        const std::string code = kernel.uninstall(args.positional[0], args.purge);
-        if (!code.empty()) {
-            std::fprintf(stderr, "卸载失败：%s\n", code.c_str());
-            return 1;
+    // 其余子命令都经管理端口。方法名与子命令的对应见 04/06 §4.1。
+    struct Plan {
+        const char* command;
+        const char* method;
+        int timeout_ms;
+        bool needs_id;
+    };
+    const Plan plans[] = {
+        {"shutdown", "kernel.shutdown", 10000, false},
+        {"plugins", "kernel.plugins", 30000, false},
+        {"install", "kernel.install", 60000, true},
+        {"uninstall", "kernel.uninstall", 60000, true},
+        {"enable", "kernel.enable", 30000, true},
+        {"disable", "kernel.disable", 30000, true},
+        {"logs", "kernel.logs", 30000, true},
+    };
+
+    const Plan* plan = nullptr;
+    for (const auto& item : plans) {
+        if (args.command == item.command) {
+            plan = &item;
+            break;
         }
-        std::printf("已卸载 %s%s\n", args.positional[0].c_str(),
-                    args.purge ? "（含数据）" : "（保留数据）");
-        return 0;
+    }
+    if (plan == nullptr) {
+        std::fprintf(stderr, "未知子命令：%s\n", args.command.c_str());
+        print_usage(stderr);
+        return 2;
+    }
+    if (plan->needs_id && args.positional.size() != 1) {
+        std::fprintf(stderr, "子命令 %s 需要一个参数\n", args.command.c_str());
+        return 2;
     }
 
-    if ((args.command == "enable" || args.command == "disable") && args.positional.size() == 1) {
-        ling::Kernel kernel(args.data_dir);
-        const std::string code =
-            kernel.set_enabled(args.positional[0], args.command == "enable");
-        if (!code.empty()) {
-            std::fprintf(stderr, "操作失败：%s\n", code.c_str());
-            return 1;
-        }
-        std::printf("%s %s\n", args.command == "enable" ? "已启用" : "已停用",
-                    args.positional[0].c_str());
-        return 0;
+    nlohmann::json args_object = nlohmann::json::object();
+    if (args.command == "install") {
+        args_object["path"] = args.positional[0];
+    } else if (args.command == "uninstall") {
+        args_object["id"] = args.positional[0];
+        args_object["purge"] = args.purge;
+    } else if (args.command == "logs") {
+        args_object["plugin"] = args.positional[0];
+    } else if (plan->needs_id) {
+        args_object["id"] = args.positional[0];
     }
 
-    if (args.command == "logs") {
-        ling::Kernel kernel(args.data_dir);  // 构造时会初始化日志目录
-        const std::filesystem::path log_dir = args.data_dir / "logs";
-        std::filesystem::path latest;
-        std::error_code ec;
-        // 日志按天分文件，文件名里的日期可字典序比较，取最大的那个即最新。
-        for (const auto& entry : std::filesystem::directory_iterator(log_dir, ec)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            const std::string name = entry.path().filename().string();
-            if (name.rfind("kernel-", 0) != 0) {
-                continue;
-            }
-            if (latest.empty() || name > latest.filename().string()) {
-                latest = entry.path();
-            }
-        }
-        if (latest.empty()) {
-            std::printf("还没有日志\n");
-            return 0;
-        }
-        std::ifstream input(latest);
-        std::vector<std::string> lines;
-        std::string line;
-        while (std::getline(input, line)) {
-            lines.push_back(line);
-        }
-        const std::size_t begin = lines.size() > 40 ? lines.size() - 40 : 0;
-        for (std::size_t i = begin; i < lines.size(); ++i) {
-            std::printf("%s\n", lines[i].c_str());
-        }
+    const ling::AdminReply reply = ling::admin::call(args.data_dir, plan->method,
+                                                     args_object.dump(), plan->timeout_ms);
+    if (!reply.ok()) {
+        std::fprintf(stderr, "%s%s%s\n", reply.code.empty() ? "" : reply.code.c_str(),
+                     reply.code.empty() ? "" : " ", reply.message.c_str());
+        return exit_code_of(reply);
+    }
+
+    if (args.json) {
+        std::printf("%s\n", reply.result.c_str());
         return 0;
     }
 
     if (args.command == "plugins") {
-        ling::Kernel kernel(args.data_dir);
-        kernel.load_all();
-        const auto& plugins = kernel.plugins();
-        std::size_t printed = 0;
-        // 已停用的插件不会进装载表，但它们确实装着，所以单独列一遍。
-        for (const auto& plugin : plugins) {
-            std::printf("%-24s %-10s %s\n", plugin.manifest.id.c_str(),
-                        plugin.manifest.version.c_str(), ling::state_name(plugin.state));
-            ++printed;
-        }
-        std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(kernel.plugins_dir(), ec)) {
-            if (!entry.is_directory()) {
-                continue;
-            }
-            const std::string id = entry.path().filename().string();
-            if (!kernel.is_disabled(id)) {
-                continue;
-            }
-            if (!std::filesystem::exists(entry.path() / "plugin.toml")) {
-                continue;
-            }
-            std::printf("%-24s %-10s %s\n", id.c_str(), "-", "disabled");
-            ++printed;
-        }
-        if (printed == 0) {
-            std::printf("没有已安装的插件\n");
-        }
-        return 0;
+        print_plugins(reply.result);
+    } else if (args.command == "logs") {
+        print_log_lines(reply.result);
+    } else if (args.command == "shutdown") {
+        std::printf("已请求宿主退出\n");
+    } else {
+        std::printf("%s 成功\n", args.command.c_str());
     }
-
-    print_usage(stderr);
-    return 2;
+    return 0;
 }
