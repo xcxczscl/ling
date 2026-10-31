@@ -409,6 +409,8 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
         if (!server.poll(200)) {
             break;
         }
+        // 心跳挂在同一轮循环里，跟着已有的 200 毫秒节拍走，不另起唤醒。
+        kernel.publish_tick();
     }
     server.stop();
     std::printf("ling 已停止。\n");

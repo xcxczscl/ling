@@ -194,7 +194,7 @@ def case_l1_manifest(h):
     rc, out, err = h.cli("plugins", "--json")
     listed = json.loads(out)["plugins"] if rc == 0 and out.strip().startswith("{") else []
     ids = {item["id"] for item in listed}
-    expected = {"core-settings", "core-plugin-manager", "core-log"}
+    expected = {"core-settings", "core-plugin-manager", "core-log", "core-job"}
     states = {item["id"]: item["state"] for item in listed}
     h.check(
         "TC-079",

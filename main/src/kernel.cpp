@@ -423,7 +423,8 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    Loa
 }
 
 std::size_t Kernel::install_builtins(const std::filesystem::path& program_dir) {
-    static const char* const kBuiltins[] = {"core-settings", "core-plugin-manager", "core-log"};
+    static const char* const kBuiltins[] = {"core-settings", "core-plugin-manager", "core-log",
+                                            "core-job"};
     std::size_t installed = 0;
     for (const char* id : kBuiltins) {
         std::error_code ec;
@@ -1070,6 +1071,18 @@ EmitStats Kernel::emit_kernel(const std::string& topic, const std::string& paylo
     }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(payload.data());
     return events_.dispatch(topic, bytes, payload.size());
+}
+
+void Kernel::publish_tick() {
+    const auto now = std::chrono::system_clock::now();
+    const auto epoch_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+    nlohmann::json payload;
+    payload["now"] = iso8601_now();
+    payload["epoch_ms"] = epoch_ms;
+    // 心跳不写内核日志：每 200 毫秒一条会把日志刷满，排障时反而找不到东西。
+    emit_kernel("kernel.tick", payload.dump());
 }
 
 void Kernel::publish_state(const LoadedPlugin& plugin, const char* state,

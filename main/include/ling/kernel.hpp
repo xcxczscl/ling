@@ -84,6 +84,10 @@ public:
     // 管理端口启动后写进 registry.json，供命令行找端口。
     void note_admin_port(std::uint16_t port);
 
+    // 广播 kernel.tick。宿主主循环每轮调一次，供需要按时间做事的插件使用。
+    // 为什么用它而不是让插件起线程：见 docs/ling/04-详细设计/01-内核四服务.md §6.4。
+    void publish_tick();
+
     // 预装内置插件：从 <程序目录>/plugins/<编号> 复制到数据根，已装或用户主动卸过的跳过。
     // 返回实际安装的个数。
     std::size_t install_builtins(const std::filesystem::path& program_dir);

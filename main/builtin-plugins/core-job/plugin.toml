@@ -1,0 +1,6 @@
+id = "core-job"
+version = "1.0.0"
+api = "1"
+name = "定时任务"
+description = "按五段 cron 触发对插件方法的调用，任务定义存在配置里，可导出可还原"
+capabilities = []

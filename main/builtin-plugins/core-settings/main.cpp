@@ -3,6 +3,7 @@
 // 存储：<数据根>/settings.json，顶层 schema_version 与 entries，
 // entries 的键是 "<插件编号>.<键名>"，值是 {"v": 任意 JSON, "updated_at": 时间}。
 // 键空间按前缀隔离；内核经 write_config 转发时把调用方编号放在 args.plugin 里。
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -83,26 +84,33 @@ bool save_document() {
 #endif
 }
 
-void load_document() {
+// 载入结果。三种结果对应三种处理方式，不能混成一个 bool：
+// 文件不存在与文件坏了都要「按空配置继续」，但版本过高必须拒绝装载。
+enum class LoadResult { kOk, kBroken, kTooNew };
+
+LoadResult load_document() {
     g.document = nlohmann::json::object();
     g.document["schema_version"] = kSchemaVersion;
     g.document["entries"] = nlohmann::json::object();
 
     std::ifstream input(g.settings_path, std::ios::binary);
     if (!input) {
-        return;
+        return LoadResult::kOk;  // 首次运行，没有配置文件
     }
     auto parsed = nlohmann::json::parse(input, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object()) {
-        return;
+        // 坏文件按空配置继续，但绝不覆盖它——自动写回空配置等于把用户的配置弄丢。
+        std::fprintf(stderr, "[core-settings] %s 解析失败，按空配置继续，文件保持原样\n",
+                     g.settings_path.string().c_str());
+        return LoadResult::kBroken;
     }
-    // 高版本配置不猜、不丢字段，直接按空配置起步并保留原文件不动。
     if (parsed.value("schema_version", 0) > kSchemaVersion) {
-        return;
+        return LoadResult::kTooNew;
     }
     if (parsed.contains("entries") && parsed["entries"].is_object()) {
         g.document["entries"] = parsed["entries"];
     }
+    return LoadResult::kOk;
 }
 
 int32_t reply_json(const nlohmann::json& value, uint8_t** out, size_t* out_len) {
@@ -130,10 +138,25 @@ nlohmann::json parse_args(const uint8_t* args, size_t len) {
     return parsed;
 }
 
-// 键必须有 "<编号>." 前缀，否则越权（04/07 §4.2）。
+// 键必须有 "<插件名>." 前缀，否则越权。
 bool key_owned_by(const std::string& key, const std::string& plugin_id) {
     return key.size() > plugin_id.size() + 1 && key.compare(0, plugin_id.size(), plugin_id) == 0 &&
            key[plugin_id.size()] == '.';
+}
+
+// 键的形状：不超过 128 字节，只含字母、数字、下划线、连字符、点，不以点结尾。
+// 键会直接进 JSON 的键名与界面，形状不合法时宁可拒绝，也不要存进去以后到处要转义。
+bool valid_key_shape(const std::string& key) {
+    if (key.empty() || key.size() > 128 || key.back() == '.') {
+        return false;
+    }
+    for (char ch : key) {
+        const auto uch = static_cast<unsigned char>(ch);
+        if (std::isalnum(uch) == 0 && ch != '_' && ch != '-' && ch != '.') {
+            return false;
+        }
+    }
+    return key.find("..") == std::string::npos;
 }
 
 int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
@@ -146,8 +169,20 @@ int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
     if (!key_owned_by(key, plugin)) {
         return 3;  // E_NAMESPACE_VIOLATION
     }
+    if (!valid_key_shape(key)) {
+        return 2;
+    }
     if (!parsed.contains("value")) {
         return 2;
+    }
+
+    // 写 null 等于删键：撤销「原本不存在」的配置时要能表达成删除，而不是留个空值。
+    if (parsed["value"].is_null()) {
+        g.document["entries"].erase(key);
+        if (!save_document()) {
+            return 4;
+        }
+        return reply_json({{"key", key}, {"deleted", true}}, out, out_len);
     }
 
     nlohmann::json entry;
@@ -233,7 +268,15 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
     g.host = host;
     g.ctx = ctx;
     g.settings_path = data_root_of(data_dir) / "settings.json";
-    load_document();
+
+    if (load_document() == LoadResult::kTooNew) {
+        // 拒绝装载而不是按空配置继续：继续的话下一次写入会把新格式覆盖成旧格式。
+        std::fprintf(stderr,
+                     "[core-settings] %s 由更高版本的 ling 写入，本次不装载；"
+                     "请升级 ling 或换回原来的版本\n",
+                     g.settings_path.string().c_str());
+        return 5;
+    }
 
     // requires_mask 只有 fs：这个插件只碰自己的配置文件。
     const struct {

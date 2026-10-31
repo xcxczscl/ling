@@ -37,7 +37,8 @@ bool is_supported_api(const std::string& api) {
 bool has_leading_core(const std::string& id) { return id.rfind("core-", 0) == 0; }
 
 // 内置插件清单。MVP 只有三个，core-ui 与 core-job 待 M5 加回（11 §4.2 第三条）。
-constexpr const char* kBuiltinIds[] = {"core-settings", "core-plugin-manager", "core-log"};
+constexpr const char* kBuiltinIds[] = {"core-settings", "core-plugin-manager", "core-log",
+                                       "core-job"};
 
 // 拆三段版本号，失败返回空。
 std::array<int, 3> split_version(const std::string& text) {
