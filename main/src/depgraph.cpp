@@ -153,7 +153,8 @@ bool version_satisfies(const std::vector<std::uint32_t>& constraint, const std::
     return true;
 }
 
-DepGraph build_graph(const std::vector<InstalledEntry>& installed) {
+DepGraph build_graph(const std::vector<InstalledEntry>& installed,
+                     const std::set<std::string>& unavailable) {
     DepGraph graph;
 
     std::map<std::string, const InstalledEntry*> by_id;
@@ -162,25 +163,64 @@ DepGraph build_graph(const std::vector<InstalledEntry>& installed) {
         graph.edges[entry.id];  // 让没有依赖的插件也作为节点存在
     }
 
+    // 第一遍：算出「哪些插件用不了」。从 unavailable 出发，沿依赖关系往下传：
+    // 依赖别人的人，别人用不了，它也用不了。传到底为止。
+    std::set<std::string> blocked = unavailable;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& entry : installed) {
+            if (blocked.count(entry.id) != 0) {
+                continue;
+            }
+            for (const auto& raw : entry.requires) {
+                Dependency dependency;
+                if (!parse_requirement(raw, &dependency)) {
+                    blocked.insert(entry.id);
+                    changed = true;
+                    break;
+                }
+                const auto found = by_id.find(dependency.id);
+                if (found == by_id.end() ||
+                    !version_satisfies(dependency.constraint, found->second->version) ||
+                    blocked.count(dependency.id) != 0) {
+                    blocked.insert(entry.id);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 第二遍：给每个用不了的插件写一条具体原因，能给理由的都尽量具体——
+    // 用户看到「缺 demo-a@1（没装这个插件）」才知道下一步做什么。
     for (const auto& entry : installed) {
+        bool reported = false;
         for (const auto& raw : entry.requires) {
             Dependency dependency;
             if (!parse_requirement(raw, &dependency)) {
-                // 清单校验阶段会拦住，这里只兜底：记成未满足，不炸图。
-                graph.unmet.push_back(
-                    {entry.id, raw, "依赖写法不对：" + raw});
+                graph.unmet.push_back({entry.id, raw, "依赖写法不对：" + raw});
+                reported = true;
                 continue;
             }
             const auto found = by_id.find(dependency.id);
             if (found == by_id.end()) {
-                graph.unmet.push_back(
-                    {entry.id, raw, "缺 " + raw + "（没装这个插件）"});
+                graph.unmet.push_back({entry.id, raw, "缺 " + raw + "（没装这个插件）"});
+                reported = true;
                 continue;
             }
             if (!version_satisfies(dependency.constraint, found->second->version)) {
                 graph.unmet.push_back({entry.id, raw,
                                        "版本不符：要 " + raw + "，装的是 " +
                                            found->second->id + " " + found->second->version});
+                reported = true;
+                continue;
+            }
+            if (blocked.count(dependency.id) != 0) {
+                // 依赖的插件装着但用不了。说清是它自己用不了，而不是它不存在。
+                graph.unmet.push_back({entry.id, raw,
+                                       "依赖 " + dependency.id + " 现在用不了，所以它也停着"});
+                reported = true;
                 continue;
             }
             auto& list = graph.edges[entry.id];
@@ -189,7 +229,11 @@ DepGraph build_graph(const std::vector<InstalledEntry>& installed) {
                 graph.reverse[dependency.id].push_back(entry.id);
             }
         }
+        // 自己没查出问题但被标成不可用的（例如它被停用了），原因由调用方给，
+        // 这里不编一条：停用是用户主动做的，不是缺依赖。
+        (void)reported;
     }
+
     return graph;
 }
 

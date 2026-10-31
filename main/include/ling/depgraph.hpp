@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,8 +58,13 @@ bool parse_version(const std::string& text, std::vector<std::uint32_t>* out);
 // 约束与目标版本是否匹配（04/04 §3.2）。
 bool version_satisfies(const std::vector<std::uint32_t>& constraint, const std::string& version);
 
-// 从零构建。缺插件与版本不符都记进 unmet，不加边。
-DepGraph build_graph(const std::vector<InstalledEntry>& installed);
+// 从零构建。缺插件、版本不符、依赖不可用都记进 unmet，不加边。
+//
+// unavailable 是「装着但用不了」的插件（被停用、启动失败）。它们本身不算缺依赖，
+// 但依赖它们的插件必须一起停——否则调用方会拿到「方法不存在」，而这在用户看来
+// 是随机的：明明装着的插件突然不能用了。
+DepGraph build_graph(const std::vector<InstalledEntry>& installed,
+                     const std::set<std::string>& unavailable = {});
 
 // 环检测（Kahn）。返回空表示无环；否则返回一个环路，首尾相同。
 std::vector<std::string> find_cycle(const DepGraph& graph);

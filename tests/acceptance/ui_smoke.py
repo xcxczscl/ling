@@ -14,6 +14,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -57,14 +58,12 @@ def main():
 
     exe = ROOT / "run" / args.preset / "ling.exe"
     ui = ROOT / "run" / args.preset / "ling-ui.exe"
-    data = ROOT / "run" / args.preset / "data-test" / "ui_smoke"
+    # 系统临时目录：每次从空白开始，也不碰仓库里的目录。
+    data = pathlib.Path(tempfile.mkdtemp(prefix="ling-test-ui-smoke-"))
     if not ui.exists():
         print(f"找不到 {ui}，先构建 {args.preset}")
         return 1
-    if data.exists():
-        import shutil
-        shutil.rmtree(data)
-    data.mkdir(parents=True)
+    # mkdtemp 已经建好了
 
     results = []
 

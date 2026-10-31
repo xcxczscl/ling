@@ -5,7 +5,7 @@
     python tests/acceptance/acceptance.py --script l1_manifest
     python tests/acceptance/acceptance.py --script all
 
-每个脚本用独立数据根 run/<preset>/data-test/<脚本名>/，独立端口（8020 起）。
+每个脚本用独立的系统临时目录做数据根（跑完不删，留着排查），独立端口（8020 起）。
 退出码 0 表示该脚本全部用例通过；1 表示有失败；2 表示环境问题（起不来宿主）。
 """
 import argparse
@@ -14,6 +14,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -35,7 +36,8 @@ class Harness:
         self.preset = preset
         self.exe = ROOT / "run" / preset / EXE_NAME
         self.artifacts = ROOT / "run" / preset / "plugins"
-        self.data_root = ROOT / "run" / preset / "data-test" / script
+        # 数据根放系统临时目录：验收每次都从空白开始，又不碰仓库里的目录。
+        self.data_root = pathlib.Path(tempfile.mkdtemp(prefix=f"ling-test-{script}-"))
         self.port = port
         self.proc = None
         self.passed = 0
@@ -44,8 +46,8 @@ class Harness:
 
     def start(self):
         if self.data_root.exists():
-            shutil.rmtree(self.data_root)
-        self.data_root.mkdir(parents=True)
+            pass  # 每次都是新的临时目录，不需要清理
+        # mkdtemp 已经建好了
         # 宿主输出落到文件：失败时要能看到崩溃现场，用管道会丢。
         self.serve_log = self.data_root / "serve.log"
         self._serve_file = open(self.serve_log, "w", encoding="utf-8")
@@ -129,9 +131,25 @@ class Harness:
 
     def expect_manifest_error(self, case, dir_name, new_id, mutate=None):
         variant = self.make_variant(dir_name, new_id, mutate)
-        rc, out, err = self.cli("install", str(variant))
-        text = out + err
-        self.check(case, rc != 0 and "E_MANIFEST_INVALID" in text, text.strip()[:200])
+        # 屏幕上的输出是人话，错误码在 --json 里，脚本按码判定。
+        rc, out, err = self.cli("install", str(variant), "--json")
+        self.check(case, rc != 0 and error_code(out) == "E_MANIFEST_INVALID",
+                   (out + err).strip()[:200])
+
+
+def error_code(output):
+    """从 --json 输出里取错误码；不是 JSON 时返回空串。"""
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and "error" in parsed:
+            return parsed["error"].get("code", "")
+    return ""
 
 
 def replace_line(manifest, key, value):
@@ -175,15 +193,16 @@ def case_l1_manifest(h):
 
     # TC-105 api 主版本与宿主不同
     variant = h.make_variant("demo-a", "demo-a", lambda m: replace_line(m, "api", "99"))
-    rc, out, err = h.cli("install", str(variant))
+    rc, out, err = h.cli("install", str(variant), "--json")
     text = out + err
-    h.check("TC-105", rc != 0 and "E_API_MISMATCH" in text, text.strip()[:200])
+    h.check("TC-105", rc != 0 and error_code(text) == "E_API_MISMATCH", text.strip()[:200])
 
     # TC-108 同一编号装两次
     rc1, _, _ = h.cli("install", str(h.artifacts / "demo-a"))
-    rc2, out2, err2 = h.cli("install", str(h.artifacts / "demo-a"))
+    rc2, out2, err2 = h.cli("install", str(h.artifacts / "demo-a"), "--json")
     text = out2 + err2
-    h.check("TC-108", rc1 == 0 and rc2 != 0 and "E_PLUGIN_EXISTS" in text, text.strip()[:200])
+    h.check("TC-108", rc1 == 0 and rc2 != 0 and error_code(text) == "E_PLUGIN_EXISTS",
+            text.strip()[:200])
 
     # TC-114 业务插件占用 core- 前缀。目录名与 id 一致，确保被拦住的是前缀而不是目录名。
     h.expect_manifest_error(

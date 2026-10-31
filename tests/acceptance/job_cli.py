@@ -10,6 +10,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -21,10 +22,9 @@ def main():
     args = parser.parse_args()
 
     exe = ROOT / "run" / args.preset / "ling.exe"
-    data = ROOT / "run" / args.preset / "data-test" / "job_cli"
-    if data.exists():
-        shutil.rmtree(data)
-    data.mkdir(parents=True)
+    # 系统临时目录：每次从空白开始，也不碰仓库里的目录。
+    data = pathlib.Path(tempfile.mkdtemp(prefix="ling-test-job-cli-"))
+    # mkdtemp 已经建好了
 
     results = []
 

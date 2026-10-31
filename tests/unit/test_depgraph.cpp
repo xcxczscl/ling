@@ -75,6 +75,26 @@ TEST_CASE("依赖图记录边与未满足", "[depgraph]") {
     CHECK(graph.unmet_text("demo-d").find("版本不符") != std::string::npos);
 }
 
+TEST_CASE("依赖不可用时往下传", "[depgraph]") {
+    // demo-a 装着但被停用：demo-b 要它，demo-c 又要 demo-b，两个都得停。
+    const auto graph = build_graph({entry("demo-a", "1.0.0"),
+                                    entry("demo-b", "1.0.0", {"demo-a@1"}),
+                                    entry("demo-c", "1.0.0", {"demo-b"})},
+                                   {"demo-a"});
+
+    CHECK(graph.unmet_text("demo-a").empty());  // 它自己没缺东西，是用户停的
+    CHECK(graph.unmet_text("demo-b").find("demo-a") != std::string::npos);
+    CHECK(graph.unmet_text("demo-c").find("demo-b") != std::string::npos);
+
+    // 不可用往下传之后，仍然要按依赖顺序来
+    const auto plan = compute_plan(graph, {{"demo-a", true}, {"demo-b", true}, {"demo-c", true}});
+    REQUIRE(plan.size() == 2);
+    CHECK_FALSE(plan[0].activate);
+    CHECK(plan[0].plugin_id == "demo-c");  // 反向拓扑序：先停最下游
+    CHECK_FALSE(plan[1].activate);
+    CHECK(plan[1].plugin_id == "demo-b");
+}
+
 TEST_CASE("环检测给出具体环路", "[depgraph]") {
     const auto flat = build_graph({entry("demo-a", "1.0.0"), entry("demo-b", "1.0.0", {"demo-a"})});
     CHECK(find_cycle(flat).empty());

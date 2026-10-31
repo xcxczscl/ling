@@ -10,6 +10,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -22,10 +23,9 @@ def main():
 
     exe = ROOT / "run" / args.preset / "ling.exe"
     artifacts = ROOT / "run" / args.preset / "plugins"
-    data = ROOT / "run" / args.preset / "data-test" / "reconcile"
-    if data.exists():
-        shutil.rmtree(data)
-    data.mkdir(parents=True)
+    # 系统临时目录：每次从空白开始，也不碰仓库里的目录。
+    data = pathlib.Path(tempfile.mkdtemp(prefix="ling-test-reconcile-"))
+    # mkdtemp 已经建好了
 
     results = []
 
@@ -72,6 +72,34 @@ def main():
     check("两个都已启用", item_a["state"] == "activated" and item_b["state"] == "activated",
           f"a={item_a['state']} b={item_b['state']}")
     check("原因已清掉", "reason" not in item_b, str(item_b.get("reason")))
+
+    # 停用 vs 卸载：停用是「装着但不用」，依赖它的也要跟着停
+    code, out = ling("disable", "demo-a")
+    item_b = state_of("demo-b")
+    check("停用被依赖方：依赖方跟着停", code == 0 and item_b["state"] == "deactivated",
+          str(item_b))
+    check("原因说清是「用不了」而不是「没装」",
+          "用不了" in item_b.get("reason", ""), str(item_b.get("reason")))
+
+    code, out = ling("enable", "demo-a")
+    item_b = state_of("demo-b")
+    check("重新启用后依赖方自动起来", code == 0 and item_b["state"] == "activated",
+          str(item_b.get("state")))
+
+    # 重载：依赖方先停、换完再回来
+    code, out = ling("reload", "demo-a")
+    item_a, item_b = state_of("demo-a"), state_of("demo-b")
+    check("重载后自己与依赖方都在跑",
+          code == 0 and item_a["state"] == "activated" and item_b["state"] == "activated",
+          f"{item_a['state']}/{item_b['state']}")
+
+    code, out = ling("restart", "demo-a")
+    item_b = state_of("demo-b")
+    check("restart 之后依赖方也回来了", code == 0 and item_b["state"] == "activated",
+          str(item_b.get("state")))
+
+    code, out = ling("reload", "not-installed")
+    check("重载不存在的插件给出人话", code == 4 and "找不到这个插件" in out, out.strip()[:60])
 
     code, out = ling("uninstall", "demo-a")
     check("卸掉被依赖方", code == 0, out.strip()[:50])

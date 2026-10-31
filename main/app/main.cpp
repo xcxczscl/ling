@@ -121,6 +121,8 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  enable <插件名>      启用插件\n");
     std::fprintf(out, "  disable <插件名>     停用插件，数据保留，随时能再启用\n");
     std::fprintf(out, "  logs [插件名]        查看日志；不给插件名时看 ling 自己的日志\n");
+    std::fprintf(out, "  reload <插件名>      重新加载插件（换了新版本之后用）\n");
+    std::fprintf(out, "  restart <插件名>     停一下再起来（不换版本，用于清状态）\n");
     std::fprintf(out, "  job list             列出定时任务\n");
     std::fprintf(out, "  job add <任务名>     建一条定时任务，要配 --cron 与 --call\n");
     std::fprintf(out, "  job remove <任务名>  删掉一条定时任务\n");
@@ -298,6 +300,12 @@ const ErrorHint kErrorHints[] = {
     {"E_AUTH", "口令不正确", "ling 可能重启过，重试一次即可"},
     {"E_LEDGER_FULL", "插件登记的改动太多，到了上限", "重启 ling 可以清空"},
     {"E_INTERNAL", "ling 内部出错", "把 logs 里对应的那几行贴出来，才好定位"},
+    {"E_DEPENDENCY_CYCLE", "插件之间的依赖绕成了环", "卸掉环上任意一个插件，或者改掉它的依赖声明"},
+    {"E_UNDO_FAILED", "卸载时有些改动没能退回去", "看 logs 里的失败条目，处理完再卸一次"},
+    {"E_CAPABILITY_UNKNOWN", "插件要了一个不认识的能力", "检查插件清单里的 capabilities 写法"},
+    {"E_DUPLICATE_METHOD", "这个插件注册了两个同名功能", "改掉其中一个，再重新装"},
+    {"E_RELOAD_FAILED", "换个版本没换成，旧版本已经恢复", "确认新版本的插件目录完整，再试一次"},
+    {"E_SHUTTING_DOWN", "ling 正在退出", "等它退完再操作"},
 };
 
 const ErrorHint* find_hint(const std::string& code) {
@@ -337,14 +345,14 @@ void print_failure(const ling::AdminReply& reply) {
         return;
     }
 
+    // 屏幕上只说人话，不贴错误码：错误码是给脚本与日志看的，人看到 E_XXX 只会更糊涂。
     const std::string detail = strip_code(reply.message, reply.code);
     const ErrorHint* hint = find_hint(reply.code);
     if (hint != nullptr) {
         if (detail.empty()) {
-            std::fprintf(stderr, "%s（%s）\n", hint->plain, reply.code.c_str());
+            std::fprintf(stderr, "%s。\n", hint->plain);
         } else {
-            std::fprintf(stderr, "%s：%s（%s）\n", hint->plain, detail.c_str(),
-                         reply.code.c_str());
+            std::fprintf(stderr, "%s：%s\n", hint->plain, detail.c_str());
         }
         if (hint->advice[0] != '\0') {
             std::fprintf(stderr, "提示：%s。\n", hint->advice);
@@ -352,8 +360,8 @@ void print_failure(const ling::AdminReply& reply) {
         return;
     }
 
-    std::fprintf(stderr, "%s（%s）\n", detail.empty() ? reply.message.c_str() : detail.c_str(),
-                 reply.code.empty() ? "未知错误" : reply.code.c_str());
+    std::fprintf(stderr, "%s\n",
+                 detail.empty() ? "这一步没成功，原因不明；换 ling --json 看详细信息" : detail.c_str());
 }
 
 int exit_code_of(const ling::AdminReply& reply) {
@@ -547,6 +555,14 @@ int run_job(const Args& args) {
     const ling::AdminReply reply = ling::admin::call(args.data_dir, "kernel.call",
                                                      payload.dump(), 30000);
     if (!reply.ok()) {
+        if (args.json) {
+            nlohmann::json error;
+            error["ok"] = false;
+            error["error"]["code"] = reply.code.empty() ? "E_INTERNAL" : reply.code;
+            error["error"]["message"] = strip_code(reply.message, reply.code);
+            std::printf("%s\n", error.dump().c_str());
+            return exit_code_of(reply);
+        }
         print_failure(reply);
         if (reply.code == ling::err::kPluginMissing) {
             std::fprintf(stderr, "提示：定时任务要靠 core-job 这个内置插件，用 ling plugins 看它在不在。\n");
@@ -698,6 +714,8 @@ int main(int argc, char** argv) {
         {"enable", "kernel.enable", 30000, true},
         {"disable", "kernel.disable", 30000, true},
         {"logs", "kernel.logs", 30000, true},
+        {"reload", "kernel.reload", 60000, true},
+        {"restart", "kernel.restart", 60000, true},
     };
 
     const Plan* plan = nullptr;
@@ -740,7 +758,16 @@ int main(int argc, char** argv) {
     const ling::AdminReply reply = ling::admin::call(args.data_dir, plan->method,
                                                      args_object.dump(), plan->timeout_ms);
     if (!reply.ok()) {
-        print_failure(reply);
+        if (args.json) {
+            // 加 --json 的是脚本。屏幕给人看人话，脚本要的是错误码，两者分开给。
+            nlohmann::json error;
+            error["ok"] = false;
+            error["error"]["code"] = reply.code.empty() ? "E_INTERNAL" : reply.code;
+            error["error"]["message"] = strip_code(reply.message, reply.code);
+            std::printf("%s\n", error.dump().c_str());
+        } else {
+            print_failure(reply);
+        }
         return exit_code_of(reply);
     }
 
@@ -775,17 +802,26 @@ int main(int argc, char** argv) {
                 std::printf("已安装 %s %s，现在可以用。\n", plugin_id.c_str(), version.c_str());
             }
         } else {
-            // 依赖没满足时装是装上了，但用不了。回显必须说清，否则用户以为能用了。
-            std::printf("已安装 %s %s，但现在还用不了。\n", plugin_id.c_str(), version.c_str());
+            // 装上了但没跑起来，两种情况：等依赖，或者启动时就失败了。回显分开说，
+            // 因为下一步完全不同——前者去装缺的，后者去看日志。
             const std::string reason = field("reason");
-            if (!reason.empty()) {
-                std::printf("  原因：%s\n", reason.c_str());
+            const bool waiting = reason.find("缺 ") != std::string::npos ||
+                                 reason.find("依赖") != std::string::npos ||
+                                 reason.find("版本不符") != std::string::npos;
+            if (waiting) {
+                std::printf("已安装 %s %s，但现在还用不了。\n", plugin_id.c_str(),
+                            version.c_str());
+                if (!reason.empty()) {
+                    std::printf("  原因：%s\n", reason.c_str());
+                }
                 std::printf("  把缺的装上就会自动启用，不用重启。\n");
+            } else {
+                std::printf("已安装 %s %s，但它没能启动。\n", plugin_id.c_str(), version.c_str());
+                if (!reason.empty()) {
+                    std::printf("  原因：%s\n", reason.c_str());
+                }
+                std::printf("  用 ling logs %s 看详细的报错。\n", plugin_id.c_str());
             }
-        }
-        if (document.contains("reason")) {
-            std::printf("但它启动失败：%s\n", document.value("reason", "").c_str());
-            std::printf("用 ling logs %s 看原因。\n", plugin_id.c_str());
         }
     } else if (args.command == "uninstall") {
         if (args.purge) {
@@ -798,6 +834,17 @@ int main(int argc, char** argv) {
             std::printf("已卸载 %s，它的数据还留在：\n", plugin_id.c_str());
             std::printf("  %s\n", (ec ? data_dir : shown).string().c_str());
             std::printf("下次装回来会用上这份数据。要连它一起删，加 --purge。\n");
+        }
+    } else if (args.command == "reload" || args.command == "restart") {
+        const std::string plugin_state = field("state");
+        if (plugin_state == "activated") {
+            std::printf("已重新加载 %s，现在可以用。\n", plugin_id.c_str());
+        } else {
+            std::printf("已重新加载 %s，但它现在没在跑。\n", plugin_id.c_str());
+            const std::string reason = field("reason");
+            if (!reason.empty()) {
+                std::printf("  原因：%s\n", reason.c_str());
+            }
         }
     } else if (args.command == "enable") {
         std::printf("已启用 %s。\n", plugin_id.c_str());

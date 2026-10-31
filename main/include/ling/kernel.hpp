@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -154,6 +155,11 @@ private:
     std::vector<LoadedPlugin> plugins_;
     // 依赖不满足导致停用的原因。停用的插件不在装载表里，原因得单独记。
     std::map<std::string, std::string> blocked_;
+    // 调和计划编号，单调递增。每一步广播 kernel.plan.step 时带上它。
+    std::uint64_t next_plan_id_ = 1;
+    // 正在重载的插件。重载期间把它当成「不可用」，依赖它的先停下来，
+    // 换完再回来——否则会出现「新版本还没就位，调用方已经在调」。
+    std::set<std::string> reloading_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;
     std::uint64_t next_generation_ = 1;
     std::uint16_t admin_port_ = 0;

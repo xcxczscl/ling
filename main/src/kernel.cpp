@@ -541,6 +541,8 @@ std::size_t Kernel::load_all() {
 std::string Kernel::reconcile() {
     std::vector<InstalledEntry> installed;
     std::map<std::string, bool> active;
+    // 装着但用不了的：被停用的、启动失败的。依赖它们的插件要一起停（04/04 §5.1）。
+    std::set<std::string> unavailable(reloading_.begin(), reloading_.end());
 
     // 从磁盘重建快照：停用与未装载的插件不在装载表里，只看装载表会漏掉它们，
     // 导致「先装依赖方」时算不出它其实已经装好了。
@@ -563,14 +565,24 @@ std::string Kernel::reconcile() {
         item.id = parsed.manifest->id;
         item.version = parsed.manifest->version;
         item.requires = parsed.manifest->requires_plugins;
+        const std::string id = item.id;
         installed.push_back(std::move(item));
 
-        const LoadedPlugin* plugin = find(parsed.manifest->id);
-        active[parsed.manifest->id] =
-            plugin != nullptr && plugin->state == PluginState::kActivated;
+        const LoadedPlugin* plugin = find(id);
+        const bool activated = plugin != nullptr && plugin->state == PluginState::kActivated;
+        active[id] = activated;
+
+        if (is_disabled(id)) {
+            unavailable.insert(id);
+            // 停用是用户主动做的，算「已达期望状态」：别再试着起它，也不给它记原因。
+            active[id] = true;
+        } else if (plugin != nullptr && plugin->state == PluginState::kFailed) {
+            unavailable.insert(id);
+            active[id] = true;  // 失败的重试留给人 decide（install/enable），不在这里循环重试
+        }
     }
 
-    const DepGraph graph = build_graph(installed);
+    const DepGraph graph = build_graph(installed, unavailable);
 
     const auto cycle = find_cycle(graph);
     if (!cycle.empty()) {
@@ -598,14 +610,41 @@ std::string Kernel::reconcile() {
         }
     }
 
-    for (const auto& step : compute_plan(graph, active)) {
+    const auto plan = compute_plan(graph, active);
+    if (plan.empty()) {
+        return {};  // 全都对得上：不产生任何步骤，也不广播（04/04 §5.1）
+    }
+
+    const std::uint64_t plan_id = next_plan_id_++;
+    std::uint32_t index = 0;
+    const auto announce = [&](const PlanStep& step, bool ok, const std::string& error) {
+        nlohmann::json payload;
+        payload["plan_id"] = plan_id;
+        payload["step"] = ++index;
+        payload["step_total"] = plan.size();
+        payload["action"] = step.activate ? "activate" : "deactivate";
+        payload["plugin"] = step.plugin_id;
+        payload["ok"] = ok;
+        if (!ok && !error.empty()) {
+            payload["error"] = error;
+        }
+        log_info("plan", "计划 " + std::to_string(plan_id) + " 第 " +
+                              std::to_string(index) + "/" + std::to_string(plan.size()) +
+                              " 步：" + (step.activate ? "启用 " : "停用 ") + step.plugin_id +
+                              (ok ? " 成功" : " 失败 " + error));
+        emit_kernel("kernel.plan.step", payload.dump());
+    };
+
+    for (const auto& step : plan) {
         if (!step.activate) {
             const std::string reason = graph.unmet_text(step.plugin_id);
             const std::string code = unload_one(step.plugin_id);
             if (!code.empty()) {
                 log_warn("loader", "调和时停用失败 " + step.plugin_id + "：" + code);
+                announce(step, false, code);
                 continue;
             }
+            announce(step, true, {});
             blocked_[step.plugin_id] = reason;
             log_info("loader", step.plugin_id + " 因依赖不满足停用：" + reason);
             const LoadedPlugin* plugin = find(step.plugin_id);
@@ -619,8 +658,10 @@ std::string Kernel::reconcile() {
         const std::string code = load_one(step.plugin_id);
         if (!code.empty()) {
             log_warn("loader", "调和时激活失败 " + step.plugin_id + "：" + code);
+            announce(step, false, code);
         } else {
             log_info("loader", "依赖满足，激活 " + step.plugin_id);
+            announce(step, true, {});
         }
     }
     return {};
@@ -838,6 +879,59 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         return reply;
     }
 
+    if (method == "kernel.reload" || method == "kernel.restart") {
+        const std::string id = string_arg("id");
+        if (id.empty()) {
+            reply.code = err::kPluginMissing;
+            reply.message = "缺少 id";
+            return reply;
+        }
+        const auto dir = plugins_dir() / id;
+        std::error_code dir_ec;
+        if (!std::filesystem::exists(dir / "plugin.toml", dir_ec)) {
+            reply.code = err::kPluginMissing;
+            reply.message = id;
+            return reply;
+        }
+        const ManifestResult before = load_manifest(dir, host_version_string());
+        if (!before.ok()) {
+            // 新版本清单本身就不合法，不能先把旧的卸掉再发现装不回去。
+            reply.code = err::kReloadFailed;
+            reply.message = "新版本的清单有问题，旧版本还在用：" + before.detail;
+            return reply;
+        }
+        const std::string old_version = before.manifest->version;
+
+        // 让依赖它的先停：先置为不可用，调和一次，再换产物。
+        reloading_.insert(id);
+        reconcile();
+        unload_one(id);  // 没在跑也算正常
+        const std::string load_code = load_one(id);
+        reloading_.erase(id);
+        if (!load_code.empty()) {
+            reply.code = err::kReloadFailed;
+            reply.message = "换版本失败，插件已停下：" + load_code;
+            reconcile();
+            return reply;
+        }
+        reconcile();
+
+        nlohmann::json result;
+        result["id"] = id;
+        result["version"] = old_version;
+        result["previous_version"] = old_version;
+        const LoadedPlugin* plugin = find(id);
+        result["state"] = plugin != nullptr && plugin->state == PluginState::kActivated
+                              ? "activated"
+                              : "deactivated";
+        const auto blocked = blocked_.find(id);
+        if (blocked != blocked_.end()) {
+            result["reason"] = blocked->second;
+        }
+        reply.result = result.dump();
+        return reply;
+    }
+
     if (method == "kernel.install") {
         const std::string path = string_arg("path");
         if (path.empty()) {
@@ -911,6 +1005,8 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         } else {
             unload_one(id);
         }
+        // 停用一个插件，依赖它的要跟着停；启用同理，依赖它的可能因此能起来。
+        reconcile();
         reply.result = "{\"id\":\"" + id + "\"}";
         return reply;
     }
