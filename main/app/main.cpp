@@ -1,6 +1,7 @@
 // 命令行入口。serve 之外的所有子命令都经管理端口走 kernel.* 方法（04/06 §4.1），
 // 只有 --version、--help 与 logs --kernel 在本地直接完成。
 #include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -126,7 +127,11 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  --version            显示版本\n");
     std::fprintf(out, "  --help               显示本说明\n\n");
     std::fprintf(out, "进阶选项（一般用不到）：\n");
+#ifdef _WIN32
     std::fprintf(out, "  --data-dir <目录>    指定数据目录，默认 %%APPDATA%%\\ling\n");
+#else
+    std::fprintf(out, "  --data-dir <目录>    指定数据目录，默认 ~/.local/share/ling\n");
+#endif
     std::fprintf(out, "  --port <端口>        启动时用哪个端口，默认 7900\n\n");
     std::fprintf(out, "第一次用，按这个顺序：\n");
     std::fprintf(out, "  1. 开一个窗口跑        ling serve\n");
@@ -361,11 +366,17 @@ BOOL WINAPI on_console_ctrl(DWORD type) {
     g_stop_requested.store(true);
     return TRUE;
 }
+#else
+// Linux 上没有 Ctrl+C 回调，用信号。处理函数里只置标志，真正的收尾在主循环里做。
+void on_posix_signal(int) { g_stop_requested.store(true); }
 #endif
 
 int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 #ifdef _WIN32
     ::SetConsoleCtrlHandler(on_console_ctrl, TRUE);
+#else
+    std::signal(SIGINT, on_posix_signal);
+    std::signal(SIGTERM, on_posix_signal);
 #endif
     ling::Kernel kernel(args.data_dir);
     // 先预装内置插件，再统一装载（04/07 §8.3）。
