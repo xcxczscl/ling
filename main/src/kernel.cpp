@@ -682,6 +682,7 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         const std::string load_code = id.empty() ? std::string() : load_one(id);
         nlohmann::json result;
         result["id"] = id;
+        result["version"] = parsed.ok() ? parsed.manifest->version : std::string();
         result["state"] = load_code.empty() ? "activated" : "failed";
         if (!load_code.empty()) {
             result["reason"] = load_code;

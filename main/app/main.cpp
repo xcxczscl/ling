@@ -23,6 +23,53 @@ namespace {
 
 std::atomic<bool> g_stop_requested{false};
 
+// 终端里汉字占两列，按字节补空格会错位，所以先算显示宽度再补。
+std::size_t display_width(const std::string& text) {
+    std::size_t width = 0;
+    for (const unsigned char ch : text) {
+        if ((ch & 0xC0) == 0x80) {
+            continue;  // UTF-8 续字节不单独计数
+        }
+        width += (ch < 0x80) ? 1 : 2;
+    }
+    return width;
+}
+
+std::string pad_right(const std::string& text, std::size_t width) {
+    const std::size_t current = display_width(text);
+    if (current >= width) {
+        return text;
+    }
+    return text + std::string(width - current, ' ');
+}
+
+// 装载表里的英文状态对使用者没意义，输出时翻成中文（--json 保持英文原值）。
+std::string state_text(const std::string& state) {
+    if (state == "activated") {
+        return "已启用";
+    }
+    if (state == "deactivated") {
+        return "已停用";
+    }
+    if (state == "failed") {
+        return "启动失败";
+    }
+    if (state == "installed") {
+        return "已安装";
+    }
+    return state;
+}
+
+std::string track_text(const std::string& track) {
+    if (track == "process") {
+        return "进程内";
+    }
+    if (track == "sidecar") {
+        return "独立进程";
+    }
+    return track;
+}
+
 #ifdef _WIN32
 // 控制台代码页临时切到 UTF-8。
 //
@@ -61,18 +108,31 @@ private:
 #endif
 
 void print_usage(std::FILE* out) {
-    std::fprintf(out, "ling %s\n", ling::version_string());
-    std::fprintf(out, "用法：ling <子命令> [选项] [--data-dir <路径>] [--json]\n");
-    std::fprintf(out, "  serve               前台启动宿主，监听 127.0.0.1:7900 起\n");
-    std::fprintf(out, "  shutdown            让运行中的宿主退出\n");
-    std::fprintf(out, "  plugins             列出插件与状态\n");
-    std::fprintf(out, "  install <目录>      安装并激活插件\n");
-    std::fprintf(out, "  uninstall <编号>    卸载插件，--purge 连 data/ 一起删\n");
-    std::fprintf(out, "  enable <编号>       启用插件\n");
-    std::fprintf(out, "  disable <编号>      停用插件\n");
-    std::fprintf(out, "  logs [编号]         不带编号时打印内核日志末 40 行\n");
-    std::fprintf(out, "  --version           打印版本\n");
-    std::fprintf(out, "  --help              打印本说明\n");
+    std::fprintf(out, "ling %s —— 插件宿主。装插件、用插件，自己不带功能。\n\n",
+                 ling::version_string());
+    std::fprintf(out, "用法：ling <命令> [参数] [选项]\n\n");
+    std::fprintf(out, "命令：\n");
+    std::fprintf(out, "  serve                启动 ling，前台运行（保持这个窗口开着）\n");
+    std::fprintf(out, "  plugins              列出已安装的插件\n");
+    std::fprintf(out, "  install <插件目录>   安装一个插件，装完立即可用\n");
+    std::fprintf(out, "  uninstall <插件名>   卸载插件，它的数据默认保留\n");
+    std::fprintf(out, "  enable <插件名>      启用插件\n");
+    std::fprintf(out, "  disable <插件名>     停用插件，数据保留，随时能再启用\n");
+    std::fprintf(out, "  logs [插件名]        查看日志；不给插件名时看 ling 自己的日志\n");
+    std::fprintf(out, "  shutdown             停止正在运行的 ling\n\n");
+    std::fprintf(out, "选项：\n");
+    std::fprintf(out, "  --purge              卸载时连插件的数据一起删除\n");
+    std::fprintf(out, "  --json               输出机器可读的 JSON，方便脚本处理\n");
+    std::fprintf(out, "  --version            显示版本\n");
+    std::fprintf(out, "  --help               显示本说明\n\n");
+    std::fprintf(out, "进阶选项（一般用不到）：\n");
+    std::fprintf(out, "  --data-dir <目录>    指定数据目录，默认 %%APPDATA%%\\ling\n");
+    std::fprintf(out, "  --port <端口>        启动时用哪个端口，默认 7900\n\n");
+    std::fprintf(out, "第一次用，按这个顺序：\n");
+    std::fprintf(out, "  1. 开一个窗口跑        ling serve\n");
+    std::fprintf(out, "  2. 另开一个窗口装插件    ling install <插件目录>\n");
+    std::fprintf(out, "  3. 看装上了没有        ling plugins\n\n");
+    std::fprintf(out, "插件名就是 ling plugins 第一列显示的那个，比如 demo-a。\n");
 }
 
 // 读环境变量。MSVC 把 getenv 标为不安全（C4996），而 /WX 会把它当错误，
@@ -137,7 +197,7 @@ int print_kernel_logs(const std::filesystem::path& data_dir) {
         }
     }
     if (latest.empty()) {
-        std::printf("还没有日志\n");
+        std::printf("还没有日志。ling 启动之后才会写第一行。\n");
         return 0;
     }
     std::ifstream input(latest);
@@ -159,14 +219,22 @@ void print_plugins(const std::string& result_json) {
         std::printf("%s\n", result_json.c_str());
         return;
     }
+    if (document["plugins"].empty()) {
+        std::printf("还没有安装任何插件。用 ling install <插件目录> 装一个。\n");
+        return;
+    }
+
+    // 列宽按显示宽度算，汉字才算得准。
+    std::printf("%s%s%s%s\n", pad_right("插件名", 26).c_str(), pad_right("版本", 10).c_str(),
+                pad_right("状态", 12).c_str(), "类型");
     for (const auto& plugin : document["plugins"]) {
-        std::printf("%-24s %-10s %-12s %s", plugin.value("id", "").c_str(),
-                    plugin.value("version", "").c_str(), plugin.value("state", "").c_str(),
-                    plugin.value("track", "").c_str());
-        if (plugin.contains("reason")) {
-            std::printf("  %s", plugin.value("reason", "").c_str());
+        std::printf("%s%s%s%s\n", pad_right(plugin.value("id", ""), 26).c_str(),
+                    pad_right(plugin.value("version", ""), 10).c_str(),
+                    pad_right(state_text(plugin.value("state", "")), 12).c_str(),
+                    track_text(plugin.value("track", "")).c_str());
+        if (plugin.contains("reason") && !plugin.value("reason", "").empty()) {
+            std::printf("  说明：%s\n", plugin.value("reason", "").c_str());
         }
-        std::printf("\n");
     }
 }
 
@@ -177,7 +245,12 @@ void print_log_lines(const std::string& result_json) {
         return;
     }
     if (document["lines"].empty()) {
-        std::printf("没有日志（%s）\n", document.value("path", "").c_str());
+        const std::string path = document.value("path", "");
+        if (path.empty()) {
+            std::printf("这个插件还没有写过日志。\n");
+        } else {
+            std::printf("日志文件是空的：%s\n", path.c_str());
+        }
         return;
     }
     for (const auto& line : document["lines"]) {
@@ -186,6 +259,88 @@ void print_log_lines(const std::string& result_json) {
 }
 
 // 把错误类别映射成退出码（04/06 §4.2）。
+// 错误码是给日志和排查用的，不该直接甩给使用者。这里给每个码配一句人话和一条建议。
+struct ErrorHint {
+    const char* code;
+    const char* plain;
+    const char* advice;  // 空字符串表示没有比「看说明」更好的建议
+};
+
+const ErrorHint kErrorHints[] = {
+    {"E_PLUGIN_MISSING", "找不到这个插件", "用 ling plugins 看看装了哪些插件，第一列就是插件名"},
+    {"E_PLUGIN_EXISTS", "这个插件已经装过了", "要重装就先 ling uninstall <插件名>，再装一次"},
+    {"E_METHOD_MISSING", "这个插件没有提供要调用的功能", ""},
+    {"E_MANIFEST_INVALID", "插件包有问题，装不了", "确认插件目录里有 plugin.toml，且内容完整"},
+    {"E_API_MISMATCH", "这个插件与当前版本的 ling 不兼容", "换一个版本的插件，或者升级 ling"},
+    {"E_HOST_TOO_OLD", "这个插件要求更高版本的 ling", "升级 ling 之后再装"},
+    {"E_CAPABILITY_DENIED", "这个操作超出了插件申请到的权限", ""},
+    {"E_NAMESPACE_VIOLATION", "名字前缀不合规", "插件的方法名和事件名都要以自己的插件名开头"},
+    {"E_UNINSTALL_INCOMPLETE", "卸载没做完，插件还留在磁盘上", "处理掉下面列出的条目，再试一次"},
+    {"E_IO", "读写文件失败", "检查目录权限和磁盘空间"},
+    {"E_PAYLOAD_TOO_LARGE", "数据太大，超过了 1 MB 上限", ""},
+    {"E_TIMEOUT", "操作超时", "ling 可能卡住了，用 ling logs 看看有没有线索"},
+    {"E_PROTOCOL", "和 ling 的通信格式对不上", "命令行与 ling 可能不是同一份安装"},
+    {"E_AUTH", "口令不正确", "ling 可能重启过，重试一次即可"},
+    {"E_LEDGER_FULL", "插件登记的改动太多，到了上限", "重启 ling 可以清空"},
+    {"E_INTERNAL", "ling 内部出错", "把 logs 里对应的那几行贴出来，才好定位"},
+};
+
+const ErrorHint* find_hint(const std::string& code) {
+    for (const auto& hint : kErrorHints) {
+        if (code == hint.code) {
+            return &hint;
+        }
+    }
+    return nullptr;
+}
+
+std::string trim(const std::string& text) {
+    const auto begin = text.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return {};
+    }
+    const auto end = text.find_last_not_of(" \t\r\n");
+    return text.substr(begin, end - begin + 1);
+}
+
+// 结果里常有「E_XXX 说明」这种拼好的串，去掉码只留说明。
+std::string strip_code(const std::string& text, const std::string& code) {
+    std::string result = text;
+    if (!code.empty()) {
+        const auto position = result.find(code);
+        if (position != std::string::npos) {
+            result.erase(position, code.size());
+        }
+    }
+    return trim(result);
+}
+
+void print_failure(const ling::AdminReply& reply) {
+    if (reply.kind == ling::AdminReply::Kind::kUnreachable) {
+        std::fprintf(stderr, "%s\n", reply.message.c_str());
+        std::fprintf(stderr, "提示：先在另一个窗口运行 ling serve 启动 ling。\n");
+        return;
+    }
+
+    const std::string detail = strip_code(reply.message, reply.code);
+    const ErrorHint* hint = find_hint(reply.code);
+    if (hint != nullptr) {
+        if (detail.empty()) {
+            std::fprintf(stderr, "%s（%s）\n", hint->plain, reply.code.c_str());
+        } else {
+            std::fprintf(stderr, "%s：%s（%s）\n", hint->plain, detail.c_str(),
+                         reply.code.c_str());
+        }
+        if (hint->advice[0] != '\0') {
+            std::fprintf(stderr, "提示：%s。\n", hint->advice);
+        }
+        return;
+    }
+
+    std::fprintf(stderr, "%s（%s）\n", detail.empty() ? reply.message.c_str() : detail.c_str(),
+                 reply.code.empty() ? "未知错误" : reply.code.c_str());
+}
+
 int exit_code_of(const ling::AdminReply& reply) {
     switch (reply.kind) {
         case ling::AdminReply::Kind::kOk:
@@ -217,7 +372,7 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     kernel.install_builtins(program_dir);
     const std::size_t failures = kernel.load_all();
     if (failures > 0) {
-        std::fprintf(stderr, "提示：%zu 个插件激活失败，见日志\n", failures);
+        std::fprintf(stderr, "注意：有 %zu 个插件没能启动，用 ling plugins 看是哪些。\n", failures);
     }
 
     ling::AdminServer server(&kernel);
@@ -230,8 +385,13 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
         return 3;
     }
 
-    std::printf("ling %s 已启动，管理端口 127.0.0.1:%u，数据根 %s\n", ling::version_string(),
-                static_cast<unsigned>(server.port()), args.data_dir.string().c_str());
+    std::error_code shown_ec;
+    const auto shown_root = std::filesystem::absolute(args.data_dir, shown_ec);
+    std::printf("ling %s 已启动。\n", ling::version_string());
+    std::printf("  数据目录  %s\n", (shown_ec ? args.data_dir : shown_root).string().c_str());
+    std::printf("  管理端口  127.0.0.1:%u（本机内部通信，不用管）\n",
+                static_cast<unsigned>(server.port()));
+    std::printf("保持这个窗口开着。要停止：按 Ctrl+C，或在另一个窗口运行 ling shutdown。\n");
     std::fflush(stdout);
 
     while (!g_stop_requested.load()) {
@@ -240,7 +400,7 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
         }
     }
     server.stop();
-    std::printf("宿主已退出\n");
+    std::printf("ling 已停止。\n");
     return 0;
 }
 
@@ -328,12 +488,20 @@ int main(int argc, char** argv) {
         }
     }
     if (plan == nullptr) {
-        std::fprintf(stderr, "未知子命令：%s\n", args.command.c_str());
+        std::fprintf(stderr, "不认识这个命令：%s\n\n", args.command.c_str());
         print_usage(stderr);
         return 2;
     }
     if (plan->needs_id && args.positional.size() != 1) {
-        std::fprintf(stderr, "子命令 %s 需要一个参数\n", args.command.c_str());
+        if (args.command == "install") {
+            std::fprintf(stderr, "install 要指定插件目录，例如：ling install D:////plugins////my-plugin//n");
+        } else if (args.command == "logs") {
+            std::fprintf(stderr, "logs 后面要么不写（看 ling 自己的日志），要么写一个插件名。\n");
+        } else {
+            std::fprintf(stderr, "%s 要指定插件名，例如：ling %s demo-a\n",
+                         args.command.c_str(), args.command.c_str());
+        }
+        std::fprintf(stderr, "插件名就是 ling plugins 第一列显示的那个。\n");
         return 2;
     }
 
@@ -352,8 +520,7 @@ int main(int argc, char** argv) {
     const ling::AdminReply reply = ling::admin::call(args.data_dir, plan->method,
                                                      args_object.dump(), plan->timeout_ms);
     if (!reply.ok()) {
-        std::fprintf(stderr, "%s%s%s\n", reply.code.empty() ? "" : reply.code.c_str(),
-                     reply.code.empty() ? "" : " ", reply.message.c_str());
+        print_failure(reply);
         return exit_code_of(reply);
     }
 
@@ -362,14 +529,50 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    const auto document = nlohmann::json::parse(reply.result, nullptr, false);
+    const auto field = [&document](const char* key) {
+        if (document.is_discarded() || !document.contains(key)) {
+            return std::string();
+        }
+        return document.value(key, "");
+    };
+    const std::string plugin_id = field("id");
+    const std::string version = field("version");
+
     if (args.command == "plugins") {
         print_plugins(reply.result);
     } else if (args.command == "logs") {
         print_log_lines(reply.result);
     } else if (args.command == "shutdown") {
-        std::printf("已请求宿主退出\n");
+        std::printf("已通知 ling 退出。\n");
+    } else if (args.command == "install") {
+        if (version.empty()) {
+            std::printf("已安装 %s，现在可以用。\n", plugin_id.c_str());
+        } else {
+            std::printf("已安装 %s %s，现在可以用。\n", plugin_id.c_str(), version.c_str());
+        }
+        if (document.contains("reason")) {
+            std::printf("但它启动失败：%s\n", document.value("reason", "").c_str());
+            std::printf("用 ling logs %s 看原因。\n", plugin_id.c_str());
+        }
+    } else if (args.command == "uninstall") {
+        if (args.purge) {
+            std::printf("已卸载 %s，插件和它的数据都删掉了。\n", plugin_id.c_str());
+        } else {
+            const auto data_dir = args.data_dir / "plugins" / plugin_id / "data";
+            // 相对路径直接打印会混用 / 与 \，换成绝对路径更好认。
+            std::error_code ec;
+            const auto shown = std::filesystem::absolute(data_dir, ec);
+            std::printf("已卸载 %s，它的数据还留在：\n", plugin_id.c_str());
+            std::printf("  %s\n", (ec ? data_dir : shown).string().c_str());
+            std::printf("下次装回来会用上这份数据。要连它一起删，加 --purge。\n");
+        }
+    } else if (args.command == "enable") {
+        std::printf("已启用 %s。\n", plugin_id.c_str());
+    } else if (args.command == "disable") {
+        std::printf("已停用 %s，数据还在，随时能再启用。\n", plugin_id.c_str());
     } else {
-        std::printf("%s 成功\n", args.command.c_str());
+        std::printf("%s 完成。\n", args.command.c_str());
     }
     return 0;
 }
