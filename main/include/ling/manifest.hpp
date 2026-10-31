@@ -11,7 +11,13 @@
 namespace ling {
 
 struct SidecarSpec {
-    std::string executable;      // 相对插件目录的路径
+    // runtime 决定用什么起这个进程：
+    //   process（默认）—— 直接跑 executable
+    //   python         —— 用解释器跑 entry 脚本
+    // 两种都走同一条 jsonl 协议，插件侧看不出区别。
+    std::string runtime = "process";
+    std::string executable;      // 相对插件目录的路径（runtime = process）
+    std::string entry;           // 相对插件目录的脚本路径（runtime = python）
     std::string restart = "on-crash";
     std::int32_t idle_timeout = 60;
     bool present = false;        // 清单里是否有 [sidecar] 段

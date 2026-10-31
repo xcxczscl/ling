@@ -20,9 +20,12 @@ public:
 
     // 起进程。环境变量里带 LING_TOKEN / LING_PLUGIN_ID / LING_DATA_DIR，
     // 口令只经环境变量传，命令行参数在进程列表里对所有用户可见（§8.4）。
-    std::string start(const std::filesystem::path& executable,
+    // args 是命令行参数（含引号），空表示只跑 executable 本身。
+    // Python 侧车就是靠它把解释器和脚本拼起来。
+    std::string start(const std::filesystem::path& executable, const std::string& args,
                       const std::filesystem::path& working_dir, const std::string& plugin_id,
-                      const std::string& token, const std::string& data_dir);
+                      const std::string& token, const std::string& data_dir,
+                      const std::string& sdk_dir);
 
     bool send(const sidecar::Frame& frame, std::string* error);
 

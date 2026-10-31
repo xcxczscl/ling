@@ -277,7 +277,7 @@ void print_log_lines(const std::string& result_json) {
 }
 
 // 把错误类别映射成退出码（04/06 §4.2）。
-// 错误码是给日志和排查用的，不该直接甩给使用者。这里给每个码配一句人话和一条建议。
+// 屏幕上每个错都给三样：一句人话、错误码、一条下一步。这里存后两样要用的文本。
 struct ErrorHint {
     const char* code;
     const char* plain;
@@ -285,28 +285,28 @@ struct ErrorHint {
 };
 
 const ErrorHint kErrorHints[] = {
-    {"E_PLUGIN_MISSING", "找不到这个插件", "用 ling plugins 看看装了哪些插件，第一列就是插件名"},
-    {"E_PLUGIN_EXISTS", "这个插件已经装过了", "要重装就先 ling uninstall <插件名>，再装一次"},
+    {"E_PLUGIN_MISSING", "找不到这个插件", "用 ling plugins 看装了哪些插件，第一列就是插件名"},
+    {"E_PLUGIN_EXISTS", "这个插件已经装过了", "先卸掉旧的再装：ling uninstall <插件名>"},
     {"E_METHOD_MISSING", "这个插件没有提供要调用的功能", ""},
-    {"E_MANIFEST_INVALID", "插件包有问题，装不了", "确认插件目录里有 plugin.toml，且内容完整"},
-    {"E_API_MISMATCH", "这个插件与当前版本的 ling 不兼容", "换一个版本的插件，或者升级 ling"},
-    {"E_HOST_TOO_OLD", "这个插件要求更高版本的 ling", "升级 ling 之后再装"},
+    {"E_MANIFEST_INVALID", "插件包有问题，装不了", "确认插件目录里有 plugin.toml，并且内容完整"},
+    {"E_API_MISMATCH", "这个插件与当前版本的 ling 不兼容", "换一个和当前 ling 匹配的插件，或者先升级 ling"},
+    {"E_HOST_TOO_OLD", "这个插件要求更高版本的 ling", "先升级 ling，再装这个插件"},
     {"E_CAPABILITY_DENIED", "这个操作超出了插件申请到的权限", ""},
-    {"E_NAMESPACE_VIOLATION", "名字前缀不合规", "插件的方法名和事件名都要以自己的插件名开头"},
-    {"E_UNINSTALL_INCOMPLETE", "卸载没做完，插件还留在磁盘上", "处理掉下面列出的条目，再试一次"},
-    {"E_IO", "读写文件失败", "检查目录权限和磁盘空间"},
+    {"E_NAMESPACE_VIOLATION", "名字前缀不合规", "把方法名和事件名改成以自己的插件名开头"},
+    {"E_UNINSTALL_INCOMPLETE", "卸载没做完，插件还留在磁盘上", "按上面列出的条目逐条处理，然后再卸一次"},
+    {"E_IO", "读写文件失败", "检查目录权限和磁盘剩余空间"},
     {"E_PAYLOAD_TOO_LARGE", "数据太大，超过了 1 MB 上限", ""},
-    {"E_TIMEOUT", "操作超时", "ling 可能卡住了，用 ling logs 看看有没有线索"},
-    {"E_PROTOCOL", "和 ling 的通信格式对不上", "命令行与 ling 可能不是同一份安装"},
-    {"E_AUTH", "口令不正确", "ling 可能重启过，重试一次即可"},
-    {"E_LEDGER_FULL", "插件登记的改动太多，到了上限", "重启 ling 可以清空"},
-    {"E_INTERNAL", "ling 内部出错", "把 logs 里对应的那几行贴出来，才好定位"},
+    {"E_TIMEOUT", "操作超时", "ling 可能卡住了，用 ling logs 看日志里有没有线索"},
+    {"E_PROTOCOL", "和 ling 的通信格式对不上", "命令行和 ling 可能不是同一次安装，重装一份"},
+    {"E_AUTH", "口令不正确", "ling 可能重启过，重试一次"},
+    {"E_LEDGER_FULL", "插件登记的改动太多，到了上限", "重启 ling 后重新操作"},
+    {"E_INTERNAL", "ling 内部出错", "用 ling logs 取最近的日志，那是定位问题的线索"},
     {"E_DEPENDENCY_CYCLE", "插件之间的依赖绕成了环", "卸掉环上任意一个插件，或者改掉它的依赖声明"},
-    {"E_UNDO_FAILED", "卸载时有些改动没能退回去", "看 logs 里的失败条目，处理完再卸一次"},
-    {"E_CAPABILITY_UNKNOWN", "插件要了一个不认识的能力", "检查插件清单里的 capabilities 写法"},
-    {"E_DUPLICATE_METHOD", "这个插件注册了两个同名功能", "改掉其中一个，再重新装"},
+    {"E_UNDO_FAILED", "卸载时有些改动没能退回去", "先看 ling logs 里失败的那几条，处理完再卸一次"},
+    {"E_CAPABILITY_UNKNOWN", "插件要了一个不认识的能力", "检查插件清单里 capabilities 的写法"},
+    {"E_DUPLICATE_METHOD", "这个插件注册了两个同名功能", "改掉重名的其中一个方法，再重新装"},
     {"E_RELOAD_FAILED", "换个版本没换成，旧版本已经恢复", "确认新版本的插件目录完整，再试一次"},
-    {"E_SHUTTING_DOWN", "ling 正在退出", "等它退完再操作"},
+    {"E_SHUTTING_DOWN", "ling 正在退出", "等 ling 退出之后再操作"},
 };
 
 const ErrorHint* find_hint(const std::string& code) {
@@ -738,14 +738,16 @@ int main(int argc, char** argv) {
     }
     if (plan->needs_id && args.positional.size() != 1) {
         if (args.command == "install") {
-            std::fprintf(stderr, "install 要指定插件目录，例如：ling install D:////plugins////my-plugin//n");
+            // install 收的是目录，不是插件名，别跟着下面那句一起说「插件名」。
+            std::fprintf(stderr, "install 要指定插件目录，例如：ling install .\\plugins\\my-plugin\n");
         } else if (args.command == "logs") {
             std::fprintf(stderr, "logs 后面要么不写（看 ling 自己的日志），要么写一个插件名。\n");
+            std::fprintf(stderr, "插件名就是 ling plugins 第一列显示的那个。\n");
         } else {
             std::fprintf(stderr, "%s 要指定插件名，例如：ling %s demo-a\n",
                          args.command.c_str(), args.command.c_str());
+            std::fprintf(stderr, "插件名就是 ling plugins 第一列显示的那个。\n");
         }
-        std::fprintf(stderr, "插件名就是 ling plugins 第一列显示的那个。\n");
         return 2;
     }
 

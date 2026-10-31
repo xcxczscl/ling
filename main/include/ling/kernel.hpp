@@ -44,6 +44,8 @@ struct LoadedPlugin {
     std::uint32_t restart_attempts = 0;
     bool restart_pending = false;
     std::chrono::steady_clock::time_point restart_at{};
+    // 最后一次被调用的时刻。按需侧车靠它算空闲时长（04/02 §8.7）。
+    std::chrono::steady_clock::time_point last_used_at{};
 };
 
 // 插件上下文：宿主交给插件的那块数据，所有回调都从它反查归属。
@@ -196,6 +198,8 @@ private:
     void save_registry() const;
 
     std::filesystem::path data_root_;
+    // 程序自己所在的目录。侧车要在这里找随包分发的 Python 运行时与 SDK。
+    std::filesystem::path program_dir_;
     std::vector<std::string> disabled_;
     // 用户主动卸掉的内置插件，升级时不再自动装回（04/07 §8.3）。
     std::vector<std::string> removed_builtins_;
@@ -219,6 +223,10 @@ private:
 
     // 找侧车实例；不在或没在跑返回 nullptr。
     LoadedPlugin* find_sidecar(const std::string& plugin_id);
+    // 让空闲超时的按需侧车退出。常驻（restart = "always"）的不动。
+    void reap_idle_sidecars();
+    // Python 侧车用哪个解释器。找不到时返回 "python"，让它按 PATH 去找。
+    std::filesystem::path python_interpreter() const;
 
     // 正在重载的插件。重载期间把它当成「不可用」，依赖它的先停下来，
     // 换完再回来——否则会出现「新版本还没就位，调用方已经在调」。

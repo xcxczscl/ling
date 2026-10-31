@@ -27,14 +27,18 @@ ling 是一个插件宿主程序。它自己不实现任何业务功能，只提
 
 ## 现在到哪一步
 
-**M0 设计定稿已通过，MVP（M1 + M2）已交付**：22 份设计文档全部为**已定稿**。MVP 的判定与演示记录见 [`docs/log/032-MVP交付.md`](docs/log/032-MVP交付.md)，里程碑划分见 [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md)。
+**M0 至 M4 已通过**（设计定稿、最小闭环、可装可卸、能改能换、双轨），当前版本 `0.0.5-b1`。各段的判定记录见 [`docs/log/`](docs/log/)，里程碑划分见 [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md)。
+
+M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「侧车」。侧车支持 C++ 与 Python 两种运行时、崩溃重启、按需启停。Windows 上验收 32 项全过；**Linux 那半边代码写了但没在 Linux 上编译过**，第一次上 Linux 要重编并跑一遍同一份验收脚本。
 
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
 | ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
 | 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job` 四个 |
+| 侧车轨道（`main/src/sidecar_*`） | 已定稿（04/02 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
+| Python SDK（`main/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
 | 界面（`main/ui/`） | 已定稿（`builtin-plugins/core-ui/`） | `ling-ui`：服务端与接口可用，页面还是一个占位页 |
-| 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench` |
+| 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench`、`demo-b`；侧车示例 `demo-sidecar`（C++）、`demo-py`（Python） |
 
 MVP 能跑通的最短路径：
 

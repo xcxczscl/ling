@@ -1,0 +1,12 @@
+id = "demo-py"
+version = "1.0.0"
+api = "1"
+name = "Python 侧车示例"
+description = "M4 用：用 Python 写的侧车，注册 demo-py.ping 并订阅 kernel.tick"
+capabilities = []
+
+[sidecar]
+runtime = "python"
+entry = "main.py"
+restart = "on-crash"
+idle_timeout = 5

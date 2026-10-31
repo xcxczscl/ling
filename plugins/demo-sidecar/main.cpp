@@ -62,6 +62,16 @@ void send_subscribe(const std::string& pattern) {
     send_line(frame);
 }
 
+void send_call(int id, const std::string& method, const nlohmann::json& args) {
+    nlohmann::json frame;
+    frame["v"] = 1;
+    frame["id"] = id;
+    frame["op"] = "call";
+    frame["method"] = method;
+    frame["args"] = args;
+    send_line(frame);
+}
+
 void send_result(int id, const nlohmann::json& result) {
     nlohmann::json frame;
     frame["v"] = 1;
@@ -114,6 +124,7 @@ int main() {
     send_ready(plugin_id);
 
     int ticks = 0;
+    bool self_test_sent = false;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) {
@@ -149,6 +160,21 @@ int main() {
             ++ticks;
             if (ticks % 10 == 0) {
                 append_log("收到事件 " + std::to_string(ticks) + " 次");
+            }
+            // 第一次收到心跳时自测一次：请宿主调我们登记的方法，验证
+            // 「侧车 → 宿主 → 侧车」这条往返。放在心跳之后，不插进激活握手。
+            if (!self_test_sent) {
+                self_test_sent = true;
+                send_call(9001, "demo-sidecar.ping", nlohmann::json::object());
+            }
+            continue;
+        }
+        if (op == "result" || op == "error") {
+            const int id = frame.value("id", 0);
+            if (id == 9001) {
+                append_log(op == "result"
+                               ? "自测调用成功：" + frame["result"].dump()
+                               : "自测调用失败：" + frame["error"].dump());
             }
             continue;
         }

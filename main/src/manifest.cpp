@@ -191,6 +191,18 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
             restart != nullptr && restart->is_string()) {
             manifest.sidecar.restart = restart->value<std::string>().value_or("on-crash");
         }
+        if (const auto* runtime = sidecar->as_table()->get("runtime");
+            runtime != nullptr && runtime->is_string()) {
+            manifest.sidecar.runtime = runtime->value<std::string>().value_or("process");
+        }
+        if (const auto* entry = sidecar->as_table()->get("entry");
+            entry != nullptr && entry->is_string()) {
+            manifest.sidecar.entry = entry->value<std::string>().value_or("");
+        }
+        if (const auto* idle = sidecar->as_table()->get("idle_timeout");
+            idle != nullptr && idle->is_integer()) {
+            manifest.sidecar.idle_timeout = idle->value<std::int32_t>().value_or(60);
+        }
     }
 
     // 第 1 步：目录名等于 id。
@@ -254,12 +266,36 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
         result.detail = "动态库与 [sidecar] 段并存";
         return result;
     }
-    if (manifest.sidecar.present && unsafe_relative(manifest.sidecar.executable)) {
+    if (manifest.sidecar.present && manifest.sidecar.runtime != "process" &&
+        manifest.sidecar.runtime != "python") {
+        result.code = err::kManifestInvalid;
+        result.detail = "sidecar.runtime 只能是 process 或 python，现在写的是 " +
+                        manifest.sidecar.runtime;
+        return result;
+    }
+    if (manifest.sidecar.present && manifest.sidecar.runtime == "python") {
+        if (manifest.sidecar.entry.empty()) {
+            result.code = err::kManifestInvalid;
+            result.detail = "runtime = python 时必须写 sidecar.entry（脚本路径）";
+            return result;
+        }
+        if (unsafe_relative(manifest.sidecar.entry)) {
+            result.code = err::kManifestInvalid;
+            result.detail = "sidecar.entry 必须是插件目录内的相对路径";
+            return result;
+        }
+        if (!std::filesystem::exists(dir / manifest.sidecar.entry)) {
+            result.code = err::kManifestInvalid;
+            result.detail = "找不到侧车脚本 " + manifest.sidecar.entry;
+            return result;
+        }
+    }
+    if (manifest.sidecar.present && manifest.sidecar.runtime == "process" && unsafe_relative(manifest.sidecar.executable)) {
         result.code = err::kManifestInvalid;
         result.detail = "sidecar.executable 必须是插件目录内的相对路径";
         return result;
     }
-    if (manifest.sidecar.present &&
+    if (manifest.sidecar.present && manifest.sidecar.runtime == "process" &&
         !std::filesystem::exists(dir / manifest.sidecar.executable)) {
         // 侧车装不上时最常见的错就是「清单写了，exe 没跟着来」。
         result.code = err::kManifestInvalid;
@@ -286,6 +322,21 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
         result.code = err::kManifestInvalid;
         result.detail = "本版不支持依赖声明（M3 起支持）";
         return result;
+    }
+    // 侧车的两个字段写错了不会在装载时报错，而是等到「该退出时不退出」才发现，
+    // 所以在这里拦住。取值表见 04/02 §8.7。
+    if (manifest.sidecar.present) {
+        const std::string& policy = manifest.sidecar.restart;
+        if (policy != "on-crash" && policy != "always" && policy != "never") {
+            result.code = err::kManifestInvalid;
+            result.detail = "sidecar.restart 只能是 on-crash / always / never，现在写的是 " + policy;
+            return result;
+        }
+        if (manifest.sidecar.idle_timeout < 0) {
+            result.code = err::kManifestInvalid;
+            result.detail = "sidecar.idle_timeout 不能是负数";
+            return result;
+        }
     }
     if (kMvpRejectSidecar && manifest.sidecar.present) {
         result.code = err::kManifestInvalid;

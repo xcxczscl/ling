@@ -68,3 +68,10 @@ ling_set_standard(ling-ui)
 ling_set_warnings(ling-ui)
 ling_set_hardening(ling-ui)
 ling_set_sanitizer(ling-ui)
+
+# Python 侧车 SDK 随宿主分发。插件经 LING_SDK_DIR 找到它，不必各自拷一份。
+add_custom_target(copy-python-sdk ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/python"
+            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/python"
+    COMMENT "复制 Python 侧车 SDK")

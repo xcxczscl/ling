@@ -455,6 +455,7 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    Loa
 }
 
 std::size_t Kernel::install_builtins(const std::filesystem::path& program_dir) {
+    program_dir_ = program_dir;
     static const char* const kBuiltins[] = {"core-settings", "core-plugin-manager", "core-log",
                                             "core-job"};
     std::size_t installed = 0;
@@ -963,7 +964,8 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             item["id"] = plugin.manifest.id;
             item["version"] = plugin.manifest.version;
             item["state"] = state_name(plugin.state);
-            item["track"] = plugin.sidecar ? "sidecar" : "process";
+            // 看清单而不是运行时状态：插件停用之后进程没了，但它仍然是侧车插件。
+            item["track"] = plugin.manifest.sidecar.present ? "sidecar" : "process";
             if (!plugin.last_error.empty()) {
                 item["reason"] = plugin.last_error;
             }
@@ -987,7 +989,8 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             item["id"] = id;
             item["version"] = parsed.ok() ? parsed.manifest->version : std::string();
             item["state"] = "deactivated";
-            item["track"] = "process";
+            item["track"] = parsed.ok() && parsed.manifest->sidecar.present ? "sidecar"
+                                                                            : "process";
             // 因依赖不满足停用的，把原因带上：否则用户只看到「已停用」，不知道为什么。
             const auto blocked = blocked_.find(id);
             if (blocked != blocked_.end()) {
@@ -1279,12 +1282,65 @@ std::string make_sidecar_token() {
 
 }  // namespace
 
+std::filesystem::path Kernel::python_interpreter() const {
+    // 优先级：显式指定 → 随包分发的运行时 → 系统 PATH。
+    // 随包分发的位置先占住，等 M6 打包时把 Python 放进去，这里就不用改。
+    std::string custom;
+#ifdef _WIN32
+    char* buffer = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&buffer, &size, "LING_PYTHON") == 0 && buffer != nullptr) {
+        custom = buffer;
+        std::free(buffer);
+    }
+#else
+    if (const char* value = std::getenv("LING_PYTHON"); value != nullptr) {
+        custom = value;
+    }
+#endif
+    if (!custom.empty()) {
+        return std::filesystem::path(custom);
+    }
+    if (!program_dir_.empty()) {
+#ifdef _WIN32
+        const auto bundled = program_dir_ / "runtime" / "python" / "python.exe";
+#else
+        const auto bundled = program_dir_ / "runtime" / "python" / "bin" / "python3";
+#endif
+        std::error_code ec;
+        if (std::filesystem::exists(bundled, ec)) {
+            return bundled;
+        }
+    }
+    return std::filesystem::path("python");
+}
+
 std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
     const auto dir = plugins_dir() / plugin.manifest.id;
-    const auto exe = dir / plugin.manifest.sidecar.executable;
     const auto data_dir = dir / "data";
     std::error_code ec;
     std::filesystem::create_directories(data_dir, ec);
+
+    // 两种运行时走同一套握手与帧，差别只在「用什么起这个进程」。
+    std::filesystem::path exe;
+    std::string exe_args;
+    std::filesystem::path sdk_dir;
+    if (plugin.manifest.sidecar.runtime == "python") {
+        exe = python_interpreter();
+        if (exe.empty()) {
+            return std::string(err::kInternal) +
+                   " 找不到 Python 解释器：装一个 Python 3，或用环境变量 LING_PYTHON 指定路径";
+        }
+        const auto script = dir / plugin.manifest.sidecar.entry;
+        exe_args = "\"" + script.string() + "\"";
+        if (!program_dir_.empty()) {
+            sdk_dir = program_dir_ / "python";
+        }
+        log_info("sidecar", plugin.manifest.id + " 用 " + exe.string() + " 跑 " +
+                                plugin.manifest.sidecar.entry);
+    } else {
+        exe = dir / plugin.manifest.sidecar.executable;
+    }
 
     if (plugin.process != nullptr) {
         plugin.process.reset();
@@ -1293,8 +1349,8 @@ std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
     plugin.sidecar_token = make_sidecar_token();
     plugin.process = std::make_unique<Sidecar>();
     const std::string start_error =
-        plugin.process->start(exe, dir, plugin.manifest.id, plugin.sidecar_token,
-                              data_dir.string());
+        plugin.process->start(exe, exe_args, dir, plugin.manifest.id, plugin.sidecar_token,
+                              data_dir.string(), sdk_dir.string());
     if (!start_error.empty()) {
         plugin.process.reset();
         plugin.sidecar = false;
@@ -1368,6 +1424,7 @@ std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
     }
 
     plugin.state = PluginState::kActivated;
+    plugin.last_used_at = std::chrono::steady_clock::now();
     log_info("loader", plugin.manifest.id + " 侧车已启动（pid " +
                            std::to_string(plugin.process->pid()) + "）");
     return {};
@@ -1462,14 +1519,23 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
         sidecar::Frame out;
         out.id = frame.id;
         out.op = outcome.ok() ? "result" : "error";
-        out.fields = outcome.ok()
-                         ? nlohmann::json{{"result", nlohmann::json::parse(
-                                                          std::string(outcome.data.begin(),
-                                                                      outcome.data.end()),
-                                                          nullptr, false)}}
-                         : nlohmann::json{{"error",
-                                           {{"code", outcome.code},
-                                            {"message", "宿主代调用失败"}}}};
+        if (outcome.ok()) {
+            // 方法可以返回 JSON，也可以返回一段纯文本（例如 demo-a 的 pong）。
+            // 解析不出来的按字符串带回去——直接塞 discarded 会让序列化抛异常。
+            nlohmann::json value = nullptr;
+            if (!outcome.data.empty()) {
+                const std::string text(outcome.data.begin(), outcome.data.end());
+                value = nlohmann::json::parse(text, nullptr, false);
+                if (value.is_discarded()) {
+                    value = text;
+                }
+            }
+            out.fields = nlohmann::json{{"result", value}};
+        } else {
+            out.fields = nlohmann::json{{"error",
+                                         {{"code", outcome.code},
+                                          {"message", "宿主代调用失败"}}}};
+        }
         plugin.process->send(out, &error);
         return true;
     }
@@ -1486,7 +1552,40 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
     return true;
 }
 
+void Kernel::reap_idle_sidecars() {
+    const auto now = std::chrono::steady_clock::now();
+    for (auto& plugin : plugins_) {
+        if (!plugin.sidecar || plugin.process == nullptr) {
+            continue;
+        }
+        // 常驻的（restart = "always"）不因空闲退出；0 表示按需但永不自动退出。
+        if (plugin.manifest.sidecar.restart == "always" ||
+            plugin.manifest.sidecar.idle_timeout <= 0) {
+            continue;
+        }
+        const auto idle = std::chrono::duration_cast<std::chrono::seconds>(now - plugin.last_used_at);
+        if (idle < std::chrono::seconds(plugin.manifest.sidecar.idle_timeout)) {
+            continue;
+        }
+
+        // 先发 shutdown 让它自己退，体面收尾；不退就杀掉。
+        sidecar::Frame bye;
+        bye.op = "shutdown";
+        bye.fields = nlohmann::json::object();
+        std::string error;
+        plugin.process->send(bye, &error);
+        plugin.process->terminate(1000);
+        plugin.process.reset();
+        plugin.sidecar = false;
+        // 路由与订阅故意保留：调用方下次调它要能进到 invoke_sidecar，
+        // 由那里重新拉起进程。清掉的话调用方只会得到「没有这个方法」。
+        log_info("sidecar", plugin.manifest.id + " 空闲 " + std::to_string(idle.count()) +
+                                " 秒，已退出（下次调用时再起）");
+    }
+}
+
 void Kernel::pump_sidecars() {
+    reap_idle_sidecars();
     for (auto& plugin : plugins_) {
         if (!plugin.sidecar || plugin.process == nullptr) {
             continue;
@@ -1552,12 +1651,38 @@ void Kernel::sidecar_lost(LoadedPlugin& plugin, const std::string& reason) {
 CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::string& method,
                                   const std::string& args_json) {
     CallOutcome outcome;
-    LoadedPlugin* plugin = find_sidecar(plugin_id);
-    if (plugin == nullptr) {
+    LoadedPlugin* plugin = find(plugin_id);
+    if (plugin == nullptr || !plugin->manifest.sidecar.present) {
         outcome.code = err::kPluginMissing;
-        outcome.detail = "侧车没在运行";
+        outcome.detail = "这个插件不是侧车插件";
         return outcome;
     }
+    if (plugin->state != PluginState::kActivated) {
+        outcome.code = err::kPluginMissing;
+        // 「装着但没在跑」和「没装」要分开说，否则用户会去重装一个本来就装着的插件。
+        outcome.detail = blocked_.count(plugin_id) > 0 ? "插件现在没在跑：" + blocked_[plugin_id]
+                                                      : "插件现在没在跑";
+        return outcome;
+    }
+
+    // 按需侧车：空闲退出之后，第一次调用要把它重新拉起来（04/02 §8.7）。
+    // 重新拉起会再走一遍握手，侧车会重新登记方法与订阅，所以先把旧的清掉，
+    // 否则同一批名字会被当成重复注册。
+    if (plugin->process == nullptr || !plugin->process->alive()) {
+        router_.unregister_all(plugin_id);
+        events_.unsubscribe_all(plugin_id);
+        plugin->sidecar_methods.clear();
+        plugin->sidecar_subs.clear();
+        plugin->sidecar = false;
+        const std::string start_code = activate_sidecar(*plugin);
+        if (!start_code.empty()) {
+            outcome.code = err::kInternal;
+            outcome.detail = "重新拉起侧车失败：" + start_code;
+            return outcome;
+        }
+        log_info("sidecar", plugin_id + " 按需拉起（上次是空闲退出的）");
+    }
+    plugin->last_used_at = std::chrono::steady_clock::now();
 
     const int call_id = static_cast<int>(next_sidecar_call_id_++);
     nlohmann::json call_args = nlohmann::json::parse(args_json, nullptr, false);
@@ -1576,6 +1701,7 @@ CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::stri
     }
 
     log_info("sidecar", "invoke #" + std::to_string(call_id) + " " + method);
+    const auto started = std::chrono::steady_clock::now();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         sidecar::Frame frame;
@@ -1593,6 +1719,11 @@ CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::stri
             continue;
         }
         if (frame.id == call_id && frame.op == "result") {
+            log_info("sidecar", "invoke #" + std::to_string(call_id) + " 完成，用时 " +
+                                    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::steady_clock::now() - started)
+                                                       .count()) +
+                                    " 毫秒");
             if (frame.fields.contains("result")) {
                 const std::string text = frame.fields["result"].is_string()
                                              ? frame.fields["result"].get<std::string>()
