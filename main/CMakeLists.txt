@@ -38,6 +38,9 @@ ling_set_warnings(ling_core)
 ling_set_hardening(ling_core)
 ling_set_sanitizer(ling_core)
 
+# 内置插件：源码在 main/builtin-plugins/，产物进 run/<preset>/plugins/。
+add_subdirectory(builtin-plugins)
+
 add_executable(ling app/main.cpp)
 
 target_link_libraries(ling PRIVATE ling_core)

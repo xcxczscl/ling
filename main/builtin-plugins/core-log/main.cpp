@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -104,10 +105,22 @@ std::filesystem::path log_path_of(const std::string& plugin, const std::string& 
 int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
     const std::string plugin = parsed.value("plugin", "");
-    const std::string message = parsed.value("message", "");
-    const std::string level = parsed.value("level", "info");
     if (!valid_plugin_id(plugin)) {
         return 2;
+    }
+    if (!parsed.contains("message") || !parsed["message"].is_string()) {
+        return 2;
+    }
+    const std::string message = parsed["message"].get<std::string>();
+    const std::string level = parsed.value("level", "info");
+
+    // 单行封顶 8 KB：一个插件写一行几十 MB 会把查询拖垮（02-设计与接口.md §8）。
+    constexpr std::size_t kMaxLineBytes = 8 * 1024;
+    std::string body = message;
+    bool truncated = false;
+    if (body.size() > kMaxLineBytes) {
+        body.resize(kMaxLineBytes);
+        truncated = true;
     }
 
     std::error_code ec;
@@ -115,21 +128,71 @@ int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
     const auto path = log_path_of(plugin, today_text());
     std::ofstream output(path, std::ios::app | std::ios::binary);
     if (!output) {
-        return 0;  // 落盘失败也只返回成功，调用方不必处理
+        // 环境问题不报给调用方：它改不了，报了只会让业务失败。往 stderr 留一句供排查。
+        std::fprintf(stderr, "[core-log] 无法写入 %s\n", path.string().c_str());
+        return 0;
     }
-    output << stamp_text() << " [" << level << "] " << message << "\n";
+    output << stamp_text() << " [" << level << "] " << body;
+    if (truncated) {
+        output << "（已截断，原长 " << message.size() << " 字节）";
+    }
+    output << "\n";
     return reply_json({{"written", true}}, out, out_len);
 }
 
-std::vector<std::string> read_lines(const std::filesystem::path& path) {
+// 从文件末尾往前分块读，凑够 count 行就停。内存与行数成正比，与文件大小无关。
+std::vector<std::string> tail_lines(const std::filesystem::path& path, std::size_t count) {
     std::vector<std::string> lines;
-    std::ifstream input(path, std::ios::binary);
-    std::string line;
-    while (std::getline(input, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
+    if (count == 0) {
+        return lines;
+    }
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        return lines;
+    }
+    const auto end_position = input.tellg();
+    if (end_position <= 0) {
+        return lines;
+    }
+
+    std::size_t window_size = 64 * 1024;
+    std::string window;
+    for (;;) {
+        const auto start = std::max<std::streamoff>(
+            0, end_position - static_cast<std::streamoff>(window_size));
+        const auto length = static_cast<std::size_t>(end_position - start);
+        window.assign(length, '\0');
+        input.seekg(start);
+        input.read(window.data(), static_cast<std::streamsize>(length));
+
+        lines.clear();
+        std::size_t cursor = 0;
+        if (start > 0) {
+            // 从中间读起时第一行是半截，跳过它。
+            const auto first_newline = window.find('\n');
+            cursor = first_newline == std::string::npos ? window.size() : first_newline + 1;
         }
-        lines.push_back(line);
+        while (cursor < window.size()) {
+            const auto newline = window.find('\n', cursor);
+            const auto end = newline == std::string::npos ? window.size() : newline;
+            std::string line = window.substr(cursor, end - cursor);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (!line.empty()) {
+                lines.push_back(std::move(line));
+            }
+            cursor = end + 1;
+        }
+
+        if (lines.size() >= count || start == 0) {
+            break;
+        }
+        window_size *= 4;  // 不够就扩大窗口，最多几次就到文件开头
+    }
+
+    if (lines.size() > count) {
+        lines.erase(lines.begin(), lines.end() - static_cast<std::ptrdiff_t>(count));
     }
     return lines;
 }
@@ -163,10 +226,8 @@ int32_t on_tail(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* o
     result["path"] = latest.empty() ? std::string() : latest.string();
     result["lines"] = nlohmann::json::array();
     if (!latest.empty()) {
-        auto lines = read_lines(latest);
-        const std::size_t begin = lines.size() > count ? lines.size() - count : 0;
-        for (std::size_t i = begin; i < lines.size(); ++i) {
-            result["lines"].push_back(lines[i]);
+        for (const auto& line : tail_lines(latest, count)) {
+            result["lines"].push_back(line);
         }
     }
     return reply_json(result, out, out_len);
@@ -181,13 +242,20 @@ int32_t on_query(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
     const std::string date = parsed.value("date", today_text());
     const std::string level = parsed.value("level", "");
 
-    auto lines = read_lines(log_path_of(plugin, date));
+    // 逐行读过就丢：内存只与命中的行数有关，与文件大小无关。
     nlohmann::json result;
     result["plugin"] = plugin;
     result["date"] = date;
     result["lines"] = nlohmann::json::array();
-    for (const auto& line : lines) {
-        if (!level.empty() && line.find("[" + level + "]") == std::string::npos) {
+
+    std::ifstream input(log_path_of(plugin, date), std::ios::binary);
+    std::string line;
+    const std::string tag = "[" + level + "]";
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!level.empty() && line.find(tag) == std::string::npos) {
             continue;
         }
         result["lines"].push_back(line);
