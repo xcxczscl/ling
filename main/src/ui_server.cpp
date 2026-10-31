@@ -57,47 +57,7 @@ constexpr int kHostCallTimeoutMs = 5000;
 
 // 页面还没做，先给一个能看清「服务端已经通了」的占位页。
 // 页面定稿后换掉这一段常量即可，服务端不用动。
-constexpr const char* kPlaceholderHtml = R"HTML(<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>ling</title>
-<style>
-  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 32px;
-         background: #f6f7f9; color: #1f2328; }
-  h1 { font-size: 20px; margin: 0 0 8px; }
-  p { color: #57606a; margin: 6px 0; }
-  pre { background: #fff; border: 1px solid #d8dee4; border-radius: 6px; padding: 12px;
-        overflow: auto; max-height: 420px; font-size: 13px; }
-  button { margin-top: 12px; padding: 6px 14px; border: 1px solid #d0d7de; border-radius: 6px;
-           background: #fff; cursor: pointer; }
-  button:hover { background: #f3f4f6; }
-</style>
-</head>
-<body>
-<h1>ling 界面</h1>
-<p>服务端已就绪，页面还没做。下面这块是接口连通性自检，能出内容说明整条链路是通的。</p>
-<button onclick="probe()">读一次插件列表</button>
-<pre id="out">点上面的按钮。</pre>
-<script>
-const token = new URLSearchParams(location.search).get('token') || '';
-if (token) sessionStorage.setItem('ling_token', token);
-async function probe() {
-  const out = document.getElementById('out');
-  out.textContent = '请求中…';
-  try {
-    const res = await fetch('/api/plugins', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + sessionStorage.getItem('ling_token') },
-    });
-    out.textContent = JSON.stringify(await res.json(), null, 2);
-  } catch (err) {
-    out.textContent = '请求失败：' + err;
-  }
-}
-</script>
-</body>
-</html>)HTML";
+
 
 std::string status_text(int status) {
     switch (status) {
@@ -274,7 +234,7 @@ std::pair<int, std::string> UiServer::Impl::handle_request(const Request& reques
         if (!token_equal(given, token)) {
             return {401, "口令不对或没有口令。请从 ling 主程序打开界面。"};
         }
-        return {200, std::string(kPlaceholderHtml)};
+        return {200, std::string(page_html())};
     }
 
     if (request.path.rfind("/api/", 0) != 0) {
@@ -335,6 +295,18 @@ std::pair<int, std::string> UiServer::Impl::handle_request(const Request& reques
                                                                  : nlohmann::json(nullptr)}};
         method = "kernel.call";
         payload = {{"method", "core-settings.write"}, {"args", inner}};
+    } else if (action == "plan") {
+        // 「点下去会连带谁」的预览。停用与卸载前都要先问一次它。
+        method = "kernel.plan";
+        payload = nlohmann::json::object();
+    } else if (action == "shutdown") {
+        // 设置页里的「退出 ling」。由内核执行，界面自己不替宿主做主。
+        method = "kernel.shutdown";
+        payload = nlohmann::json::object();
+    } else if (action == "jobs.validate") {
+        // 时间表写错了当场说清是哪一段，而不是等保存失败后再翻日志。
+        method = "kernel.call";
+        payload = {{"method", "core-job.validate"}, {"args", args}};
     } else if (action == "jobs.list") {
         method = "kernel.call";
         payload = {{"method", "core-job.list"}, {"args", nlohmann::json::object()}};

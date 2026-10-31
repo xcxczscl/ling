@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ling</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e3e6ea;
+  --text: #1f2328;
+  --muted: #6a737d;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --bad: #dc2626;
+  --radius: 8px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+header .sub { color: var(--muted); font-size: 12px; }
+header .spacer { flex: 1; }
+main { display: flex; min-height: calc(100vh - 55px); }
+nav {
+  width: 172px;
+  padding: 16px 10px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  margin-bottom: 4px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+nav button:hover { background: #eef1f5; }
+nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
+section { flex: 1; padding: 20px; max-width: 1080px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input, select, textarea, button {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+textarea { width: 100%; font-family: Consolas, monospace; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.danger { color: var(--bad); border-color: #f0c8c8; }
+button:disabled { opacity: .5; cursor: default; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tr:last-child td { border-bottom: 0; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: var(--ok); }
+.dot.off { background: #9aa4af; }
+.dot.bad { background: var(--bad); }
+.muted { color: var(--muted); font-size: 12px; }
+.reason { color: var(--warn); font-size: 12px; }
+#toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  max-width: 460px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: #1f2937;
+  color: #fff;
+  white-space: pre-wrap;
+  display: none;
+}
+#toast.bad { background: var(--bad); }
+pre.log {
+  margin: 0;
+  font: 12px/1.5 Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 560px;
+  overflow: auto;
+}
+.kv { display: grid; grid-template-columns: 240px 1fr auto; gap: 8px; align-items: center; padding: 6px 0; }
+.kv .key { font-family: Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ling</h1>
+  <span class="sub" id="version"></span>
+  <span class="spacer"></span>
+  <span class="muted" id="hostState">正在连接…</span>
+  <button id="refreshBtn">刷新</button>
+</header>
+<main>
+  <nav>
+    <button data-view="plugins" class="active">插件</button>
+    <button data-view="logs">日志</button>
+    <button data-view="config">配置</button>
+    <button data-view="jobs">任务</button>
+    <button data-view="settings">设置</button>
+  </nav>
+  <section id="content"></section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+// 口令只放 sessionStorage：不写 Cookie、不落盘。地址栏里的 ?token= 用完就清掉。
+let token = sessionStorage.getItem("ling-token") || "";
+if (!token) {
+  const given = new URLSearchParams(location.search).get("token");
+  if (given) {
+    token = given;
+    sessionStorage.setItem("ling-token", given);
+    history.replaceState(null, "", location.pathname);
+  }
+}
+
+const $ = (sel) => document.querySelector(sel);
+const content = $("#content");
+const state = { view: "plugins", plugins: [], jobs: [], logPlugin: "", logTimer: null };
+
+function toast(message, bad) {
+  const box = $("#toast");
+  box.textContent = message;
+  box.className = bad ? "bad" : "";
+  box.style.display = "block";
+  clearTimeout(box._timer);
+  box._timer = setTimeout(() => { box.style.display = "none"; }, 6000);
+}
+
+async function api(action, args) {
+  const response = await fetch("/api/" + action, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify(args || {})
+  });
+  if (response.status === 401) {
+    toast("口令不对或已经失效。从 ling 主程序重新打开界面。", true);
+    throw new Error("auth");
+  }
+  const body = await response.json().catch(() => ({ ok: false, error: { message: "应答不是 JSON" } }));
+  if (!body.ok) {
+    const error = body.error || {};
+    const message = (error.message || "操作失败") + (error.code ? "（" + error.code + "）" : "");
+    throw new Error(message);
+  }
+  return body.result;
+}
+
+// 每个操作出错都要显示出来，不能静默失败。
+async function run(action, args, successText) {
+  try {
+    const result = await api(action, args);
+    if (successText) toast(successText);
+    return result;
+  } catch (error) {
+    if (error.message !== "auth") toast(error.message, true);
+    return null;
+  }
+}
+
+const STATE_TEXT = { activated: "已启用", deactivated: "已停用", failed: "启动失败", installed: "已安装" };
+const TRACK_TEXT = { process: "进程内", sidecar: "独立进程" };
+
+function stateDot(value) {
+  if (value === "activated") return '<span class="dot ok"></span>';
+  if (value === "failed") return '<span class="dot bad"></span>';
+  return '<span class="dot off"></span>';
+}
+
+function esc(text) {
+  return String(text == null ? "" : text).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---------- 插件 ----------
+
+async function loadPlugins() {
+  const result = await api("plugins");
+  state.plugins = (result && result.plugins) || [];
+  renderPlugins();
+}
+
+function renderPlugins() {
+  const rows = state.plugins.map((p) => {
+    const reason = p.reason ? '<div class="reason">' + esc(p.reason) + "</div>" : "";
+    const actions = [];
+    if (p.state === "activated") {
+      actions.push('<button data-act="disable" data-id="' + esc(p.id) + '">停用</button>');
+    } else {
+      actions.push('<button data-act="enable" data-id="' + esc(p.id) + '">启用</button>');
+    }
+    actions.push('<button data-act="logs" data-id="' + esc(p.id) + '">日志</button>');
+    actions.push('<button class="danger" data-act="uninstall" data-id="' + esc(p.id) + '">卸载</button>');
+    return "<tr><td><strong>" + esc(p.id) + "</strong>" + reason + "</td>" +
+      "<td>" + esc(p.version) + "</td>" +
+      "<td>" + stateDot(p.state) + esc(STATE_TEXT[p.state] || p.state) + "</td>" +
+      "<td>" + esc(TRACK_TEXT[p.track] || p.track || "") + "</td>" +
+      '<td class="row">' + actions.join("") + "</td></tr>";
+  }).join("");
+
+  content.innerHTML = `
+    <h2>插件</h2>
+    <div class="card">
+      <div class="row">
+        <input id="installPath" placeholder="插件目录，例如 D:\\plugins\\my-plugin" style="flex:1;min-width:280px">
+        <button class="primary" id="installBtn">安装</button>
+      </div>
+      <div class="muted" style="margin-top:6px">目录里要有 plugin.toml。装完自动启用；依赖没满足的会显示原因。</div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>插件名</th><th>版本</th><th>状态</th><th>类型</th><th>操作</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="muted">还没有插件</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="muted">共 ${state.plugins.length} 个，已启用 ${state.plugins.filter(p => p.state === "activated").length} 个。</div>`;
+
+  $("#installBtn").onclick = async () => {
+    const path = $("#installPath").value.trim();
+    if (!path) { toast("先填插件目录", true); return; }
+    $("#installBtn").disabled = true;
+    const result = await run("install", { path }, "已安装 " + path);
+    $("#installBtn").disabled = false;
+    if (result) { $("#installPath").value = ""; await loadPlugins(); }
+  };
+
+  content.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      const act = btn.dataset.act;
+      if (act === "logs") { switchView("logs", id); return; }
+      if (act === "uninstall") {
+        const purge = confirm("卸载 " + id + "？\n\n选「确定」＝卸载并连数据一起删（不可恢复）\n选「取消」＝只卸载，数据保留");
+        if (!confirm("确认" + (purge ? "卸载并删除数据" : "卸载但保留数据") + "？")) return;
+        const result = await run("uninstall", { id, purge });
+        if (result) { toast(purge ? "已卸载并删除数据" : "已卸载，数据保留"); await loadPlugins(); }
+        return;
+      }
+      const result = await run(act, { id });
+      if (result) { toast(act === "enable" ? "已启用 " + id : "已停用 " + id); await loadPlugins(); }
+    };
+  });
+}
+
+// ---------- 日志 ----------
+
+async function renderLogs() {
+  const plugins = state.plugins.length ? state.plugins : (await api("plugins")).plugins;
+  const options = plugins.map((p) =>
+    '<option value="' + esc(p.id) + '"' + (p.id === state.logPlugin ? " selected" : "") + ">" +
+    esc(p.id) + "</option>").join("");
+  content.innerHTML = `
+    <h2>日志</h2>
+    <div class="card row">
+      <select id="logPlugin">${options}</select>
+      <select id="logLevel">
+        <option value="">全部级别</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+      </select>
+      <label class="muted"><input type="checkbox" id="logAuto" checked> 每 2 秒刷新</label>
+      <button id="logRefresh">刷新</button>
+    </div>
+    <div class="card"><pre class="log" id="logBody">还没有日志</pre></div>`;
+  $("#logPlugin").onchange = () => { state.logPlugin = $("#logPlugin").value; refreshLogs(); };
+  $("#logLevel").onchange = refreshLogs;
+  $("#logRefresh").onclick = refreshLogs;
+  $("#logAuto").onchange = setupLogTimer;
+  setupLogTimer();
+  refreshLogs();
+}
+
+function setupLogTimer() {
+  clearInterval(state.logTimer);
+  const box = $("#logAuto");
+  if (box && box.checked) {
+    state.logTimer = setInterval(refreshLogs, 2000);
+  }
+}
+
+async function refreshLogs() {
+  if (state.view !== "logs") { clearInterval(state.logTimer); return; }
+  const plugin = state.logPlugin;
+  if (!plugin) return;
+  try {
+    const result = await api("logs", { plugin });
+    const level = $("#logLevel").value;
+    const lines = (result.lines || []).filter((line) => !level || line.includes("[" + level + "]"));
+    $("#logBody").textContent = lines.length ? lines.slice(-200).join("\n")
+                                             : "这个插件还没写过日志";
+  } catch (error) {
+    if (error.message !== "auth") $("#logBody").textContent = error.message;
+  }
+}
+
+// ---------- 配置 ----------
+
+async function renderConfig() {
+  const plugins = state.plugins.length ? state.plugins : (await api("plugins")).plugins;
+  content.innerHTML = `
+    <h2>配置</h2>
+    <div class="card row">
+      <select id="cfgPlugin">${plugins.map((p) => '<option value="' + esc(p.id) + '">' + esc(p.id) + "</option>").join("")}</select>
+      <span class="muted">改完立即保存，不需要重启。</span>
+    </div>
+    <div class="card" id="cfgBody"></div>`;
+  $("#cfgPlugin").onchange = loadConfig;
+  loadConfig();
+}
+
+async function loadConfig() {
+  const plugin = $("#cfgPlugin").value;
+  const body = $("#cfgBody");
+  body.innerHTML = "读取中…";
+  const result = await api("config.list", { prefix: plugin + "." });
+  const keys = result.keys || [];
+  if (!keys.length) {
+    body.innerHTML = '<div class="muted">这个插件还没有存过配置。</div>';
+    return;
+  }
+  body.innerHTML = keys.map((key) => `
+    <div class="kv" data-key="${esc(key)}">
+      <span class="key">${esc(key)}</span>
+      <input value="">
+      <button data-save="${esc(key)}">保存</button>
+    </div>`).join("");
+  for (const key of keys) {
+    const value = await api("config.get", { key });
+    const input = body.querySelector('[data-key="' + key + '"] input');
+    input.value = JSON.stringify(value.found ? value.value : null);
+    input.dataset.original = input.value;
+  }
+  body.querySelectorAll("button[data-save]").forEach((btn) => {
+    btn.onclick = async () => {
+      const key = btn.dataset.save;
+      const input = body.querySelector('[data-key="' + key + '"] input');
+      let value;
+      try { value = JSON.parse(input.value); }
+      catch { toast("值要是合法的 JSON，例如 true、123、\"文本\"、{\"a\":1}", true); return; }
+      const result = await run("config.set", { key, value }, "已保存 " + key);
+      if (result) input.dataset.original = input.value;
+    };
+  });
+}
+
+// ---------- 任务 ----------
+
+async function renderJobs() {
+  const result = await api("jobs.list");
+  const jobs = result.jobs || [];
+  content.innerHTML = `
+    <h2>定时任务</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>任务名</th><th>时间表</th><th>调用</th><th>上次触发</th><th>操作</th></tr></thead>
+        <tbody>${jobs.map((j) => `
+          <tr><td><strong>${esc(j.name)}</strong></td>
+            <td><code>${esc(j.cron)}</code></td>
+            <td><code>${esc(j.method)}</code></td>
+            <td class="muted">${esc(j.last_fired || "还没跑过")}</td>
+            <td><button class="danger" data-cancel="${esc(j.name)}">删除</button></td></tr>`).join("")
+          || '<tr><td colspan="5" class="muted">还没有定时任务</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>新增任务</h2>
+      <div class="row" style="margin-bottom:8px">
+        <input id="jobName" placeholder="任务名，例如 backup">
+        <input id="jobCron" placeholder="分 时 日 月 周，例如 0 3 * * *" style="width:220px">
+        <input id="jobMethod" placeholder="调用哪个方法，例如 core-log.write" style="flex:1;min-width:220px">
+      </div>
+      <textarea id="jobArgs" rows="3" placeholder='参数（JSON 对象），例如 {"plugin":"core-log","message":"到点了"}'>{}</textarea>
+      <div class="row" style="margin-top:8px">
+        <label class="muted"><input type="checkbox" id="jobCatchUp"> 停机期间错过的要补跑一次</label>
+        <button id="jobValidate">检查时间表</button>
+        <button class="primary" id="jobAdd">建任务</button>
+      </div>
+      <div class="muted" style="margin-top:6px">任务存在配置里，重启不丢，也能随配置导出。</div>
+    </div>`;
+
+  $("#jobValidate").onclick = async () => {
+    const cron = $("#jobCron").value.trim();
+    if (!cron) { toast("先写时间表", true); return; }
+    const result = await api("jobs.validate", { cron });
+    toast(result.ok ? "时间表没问题" : "时间表有问题：" + result.reason, !result.ok);
+  };
+
+  $("#jobAdd").onclick = async () => {
+    const name = $("#jobName").value.trim();
+    const cron = $("#jobCron").value.trim();
+    const method = $("#jobMethod").value.trim();
+    if (!name || !cron || !method) { toast("任务名、时间表、方法都要填", true); return; }
+    let args;
+    try { args = JSON.parse($("#jobArgs").value || "{}"); }
+    catch { toast("参数要是合法的 JSON 对象", true); return; }
+    // 先校验再落盘：错误要当场指出哪一段，而不是等保存失败。
+    const check = await api("jobs.validate", { cron });
+    if (!check.ok) { toast("时间表写错了：" + check.reason, true); return; }
+    const result = await run("jobs.schedule",
+      { name, cron, method, args, catch_up: $("#jobCatchUp").checked },
+      "已建任务 " + name);
+    if (result) await renderJobs();
+  };
+
+  content.querySelectorAll("button[data-cancel]").forEach((btn) => {
+    btn.onclick = async () => {
+      const name = btn.dataset.cancel;
+      if (!confirm("删掉任务 " + name + "？")) return;
+      const result = await run("jobs.cancel", { name }, "已删除任务 " + name);
+      if (result) await renderJobs();
+    };
+  });
+}
+
+// ---------- 设置 ----------
+
+async function renderSettings() {
+  let closeBehavior = "keep-host";
+  try {
+    const value = await api("config.get", { key: "core-ui.close_behavior" });
+    if (value.found && typeof value.value === "string") closeBehavior = value.value;
+  } catch { /* 没存过就用默认值 */ }
+
+  content.innerHTML = `
+    <h2>设置</h2>
+    <div class="card">
+      <h2>关闭窗口时</h2>
+      <label style="display:block;padding:4px 0">
+        <input type="radio" name="close" value="keep-host" ${closeBehavior !== "stop-host" ? "checked" : ""}>
+        只关界面，ling 继续在后台跑（默认）
+      </label>
+      <label style="display:block;padding:4px 0">
+        <input type="radio" name="close" value="stop-host" ${closeBehavior === "stop-host" ? "checked" : ""}>
+        关掉界面时也退出 ling（正在跑的定时任务会中断）
+      </label>
+      <div class="muted">这个选项存在 core-settings 里，界面只负责显示和写回。</div>
+    </div>
+    <div class="card">
+      <div>界面地址：<code>${esc(location.origin)}</code></div>
+      <div class="muted">口令只存在这个标签页的会话里，换标签页要重新带 token 打开。</div>
+    </div>
+    <div class="card">
+      <button class="danger" id="shutdownBtn">退出 ling</button>
+      <div class="muted">停掉宿主和所有插件，不只是关这个页面。</div>
+    </div>`;
+
+  content.querySelectorAll('input[name="close"]').forEach((input) => {
+    input.onchange = async () => {
+      const result = await run("config.set",
+        { key: "core-ui.close_behavior", value: input.value }, "已保存");
+      if (!result) toast("保存失败", true);
+    };
+  });
+
+  $("#shutdownBtn").onclick = async () => {
+    if (!confirm("确定要退出 ling？宿主和所有插件都会停。")) return;
+    const result = await run("shutdown", {}, "已请求 ling 退出");
+    if (result) setTimeout(() => { $("#hostState").textContent = "ling 已退出"; }, 800);
+  };
+}
+
+// ---------- 视图切换 ----------
+
+function switchView(view, logPlugin) {
+  clearInterval(state.logTimer);
+  state.view = view;
+  if (logPlugin) state.logPlugin = logPlugin;
+  document.querySelectorAll("nav button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
+  const loaders = { plugins: loadPlugins, logs: renderLogs, config: renderConfig,
+                    jobs: renderJobs, settings: renderSettings };
+  loaders[view]().catch((error) => {
+    if (error.message !== "auth") toast(error.message, true);
+  });
+}
+
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.onclick = () => switchView(btn.dataset.view);
+});
+$("#refreshBtn").onclick = () => switchView(state.view);
+
+if (!token) {
+  content.innerHTML = '<div class="card">这个页面需要口令。请从 ling 主程序打开，' +
+    '地址里带上 <code>?token=</code>。</div>';
+} else {
+  switchView("plugins");
+}
+</script>
+</body>
+</html>

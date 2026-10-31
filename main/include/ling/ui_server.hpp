@@ -9,6 +9,10 @@
 
 namespace ling {
 
+// 页面内容，构建期从 main/ui/page.html 嵌进来。
+const char* page_html();
+
+
 // 界面进程对外提供的那一层。它自己不碰内核，每个动作都转成一次管理端口调用，
 // 所以界面与命令行的行为永远一致（同一条调用路由、同一套错误码）。
 class UiServer {

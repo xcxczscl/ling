@@ -120,6 +120,10 @@ public:
     int32_t deliver_to_sidecar(const std::string& plugin_id, const std::string& topic,
                                const std::string& payload);
 
+    // 四项自检：依赖环、未撤销条目、端口与口令、越权记录。只报告不修复。
+    // 返回 JSON：{ok, sections:[{key,title,ok,summary,details}]}。
+    std::string doctor_report();
+
     // 算一遍「接下来会做什么」，但一步也不执行。给命令行与界面预览用。
     // 返回 JSON：{ok, steps:[{index,action,plugin}], blocked:[{plugin,reason}]}。
     std::string plan_json();
@@ -233,6 +237,8 @@ private:
     std::set<std::string> reloading_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;
     std::uint64_t next_generation_ = 1;
+    // 撤销没撤净的插件：插件名 → 剩下的条目数。doctor 靠它报「未撤销条目」。
+    std::map<std::string, std::size_t> pending_undo_;
     std::uint16_t admin_port_ = 0;
     bool shutdown_requested_ = false;
     ling_host_api host_api_{};

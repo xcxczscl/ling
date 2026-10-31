@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
+#include <thread>
 #include <fstream>
 #include <string>
 
@@ -18,6 +20,8 @@
 #include "ling/version.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include "ling/sidecar_proto.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -133,6 +137,68 @@ void clear_ui_port(const std::filesystem::path& data_root) {
     }
 }
 
+// ---------- 侧车模式 ----------
+//
+// 被宿主拉起时，环境变量里有 LING_TOKEN 与 LING_PLUGIN_ID。这时这个进程就是个
+// 侧车插件：先握手，再开 HTTP 服务，收到 deactivate / shutdown 就自己退出。
+// 手动调试（用户直接跑这个 exe）没有这两个变量，走原来的「读 session.json」路径。
+
+// 侧车的 LING_DATA_DIR 是「自己的数据目录」（<数据根>/plugins/core-ui/data），
+// 而界面要连宿主的管理端口，那里需要数据根。回退三级，不另加一个环境变量：
+// 宿主对每种插件都按这个布局给目录，推导是确定的。
+std::filesystem::path data_root_from_sidecar(const std::string& data_dir) {
+    return std::filesystem::path(data_dir).parent_path().parent_path().parent_path();
+}
+
+// 按协议发一帧。侧车的 stdout 只许写帧，调试信息一律走 stderr。
+void send_frame(const nlohmann::json& frame) {
+    std::cout << frame.dump() << "\n" << std::flush;
+}
+
+void send_hello(const std::string& plugin_id, const std::string& token) {
+    nlohmann::json frame;
+    frame["v"] = ling::sidecar::kProtocolVersion;
+    frame["op"] = "hello";
+    frame["plugin_id"] = plugin_id;
+    frame["plugin_version"] = "1.0.0";
+    frame["token"] = token;
+    send_frame(frame);
+}
+
+// 宿主发过来的指令帧。读到 deactivate / shutdown 就停。
+std::atomic<bool> g_host_shutdown{false};
+
+// stdin 由宿主独占写，我们起一个线程读，避免和 HTTP 的 select 循环搅在一起。
+void read_host_frames() {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        ling::sidecar::Frame frame;
+        std::string error;
+        if (!ling::sidecar::parse(line, &frame, &error)) {
+            std::fprintf(stderr, "[core-ui] 收到一帧没法解析：%s\n", error.c_str());
+            continue;
+        }
+        if (frame.op == "deactivate") {
+            nlohmann::json ack;
+            ack["v"] = ling::sidecar::kProtocolVersion;
+            ack["op"] = "deactivated";
+            send_frame(ack);
+            g_host_shutdown.store(true);
+            return;
+        }
+        if (frame.op == "shutdown") {
+            g_host_shutdown.store(true);
+            return;
+        }
+        // 其余（activate）在主流程里处理；这里只关心退出。
+    }
+    // stdin 关了，说明宿主走了。
+    g_host_shutdown.store(true);
+}
+
 void print_usage() {
     std::printf("ling-ui %s\n", ling::version_string());
     std::printf("界面进程。平时由 ling serve 拉起，也可以手动起一个来调试接口。\n\n");
@@ -195,6 +261,23 @@ int main(int argc, char** argv) {
         data_root = env_root;
     }
 
+    // 侧车模式：有 LING_TOKEN 就说明是宿主拉起的，先握手再干别的。
+    const std::string sidecar_token = env_or_empty("LING_TOKEN");
+    const std::string plugin_id = env_or_empty("LING_PLUGIN_ID");
+    const bool sidecar = !sidecar_token.empty();
+    if (sidecar) {
+        const std::string own_data = env_or_empty("LING_DATA_DIR");
+        if (!own_data.empty()) {
+            data_root = data_root_from_sidecar(own_data);
+        }
+        send_hello(plugin_id, sidecar_token);
+        // stdin 读线程负责收 deactivate / shutdown；主线程只处理 activate。
+        std::thread reader(read_host_frames);
+        reader.detach();
+    }
+
+    // 界面的口令用 session.json 里那个：浏览器地址栏里能填的只有它。
+    // 握手用的侧车口令另有一份，只用来证明「是宿主拉起我的」，别拿它去认证页面。
     std::string token = env_or_empty("LING_UI_TOKEN");
     if (token.empty()) {
         std::string error;
@@ -208,8 +291,23 @@ int main(int argc, char** argv) {
 
     // 自检一步都不能省：绑上端口不代表能连上宿主。口令不对、宿主正在关，
     // 都应该在这里暴露，而不是等用户点了按钮才发现（core-ui/02 §4）。
-    const ling::AdminReply probe = ling::admin::call(data_root, "kernel.plugins", "{}", 5000);
-    if (!probe.ok()) {
+    //
+    // 但第一次连不上不一定是坏事：宿主是先 load_all 再开管理端口，所以装载阶段
+    // 拉起的界面，自检必然早到一步。给它 15 秒等宿主把端口开起来，别上来就退出。
+    ling::AdminReply probe;
+    bool host_ready = false;
+    for (int attempt = 0; attempt < 15; ++attempt) {
+        probe = ling::admin::call(data_root, "kernel.plugins", "{}", 2000);
+        if (probe.ok()) {
+            host_ready = true;
+            break;
+        }
+        if (probe.kind != ling::AdminReply::Kind::kUnreachable) {
+            break;  // 口令不对这类问题，等再久也不会自己好
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    if (!host_ready) {
         std::fprintf(stderr, "连不上 ling 宿主：%s\n", probe.message.c_str());
         std::fprintf(stderr, "先确认 ling serve 在跑；如果刚重启过宿主，口令会变，重新起本程序。\n");
         return 3;
@@ -229,18 +327,22 @@ int main(int argc, char** argv) {
 
     note_ui_port(data_root, server.port());
 
-    // 宿主读这一行判定界面就绪，不用「等两秒试试」（core-ui/04 §4.2）。
-    nlohmann::json ready;
-    ready["ready"] = true;
-    ready["port"] = server.port();
-    std::printf("%s\n", ready.dump().c_str());
-    std::fflush(stdout);
+    // 手动调试时打一行就绪信息，方便脚本知道端口。侧车模式下不能往 stdout 打
+    // 非帧文本：宿主把 stdout 当帧流，一行普通文本会被判成坏帧。侧车的就绪
+    // 由握手表达，不需要额外一行。
+    if (!sidecar) {
+        nlohmann::json ready;
+        ready["ready"] = true;
+        ready["port"] = server.port();
+        std::printf("%s\n", ready.dump().c_str());
+        std::fflush(stdout);
+    }
 
     // 宿主退出后界面留在后台没有意义，探测三次连不上就自己收尾。
     // 每 2 秒探一次，不是每轮：一次探测要开套接字、读口令文件，按 200 毫秒来做纯属浪费。
     int unreachable = 0;
     auto last_probe = std::chrono::steady_clock::now();
-    while (!g_stop_requested.load()) {
+    while (!g_stop_requested.load() && !g_host_shutdown.load()) {
         server.poll(200);
         const auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_probe).count() < 2) {

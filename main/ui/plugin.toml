@@ -1,0 +1,11 @@
+id = "core-ui"
+version = "1.0.0"
+api = "1"
+name = "本机界面"
+description = "用浏览器管理 ling：看插件、装卸启停、翻日志、改配置、管定时任务"
+capabilities = ["network"]
+
+[sidecar]
+executable = "core-ui.exe"
+restart = "on-crash"
+idle_timeout = 0

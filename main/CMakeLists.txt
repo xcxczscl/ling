@@ -54,20 +54,35 @@ ling_set_warnings(ling)
 ling_set_hardening(ling)
 ling_set_sanitizer(ling)
 
-# 界面进程（core-ui 的侧车产物）。
-#
-# 现在它以独立可执行文件的形式存在：宿主侧的侧车轨道要到 M4 才做，届时把这个产物
-# 装进插件目录、清单里加 [sidecar] 段即可，代码不用重写。
-# 页面还没定稿，现阶段只提供 HTTP、认证与 /api/* 转发，见
-# docs/ling/builtin-plugins/core-ui/02-服务端与接口.md。
-add_executable(ling-ui ui/main.cpp)
+# 界面插件 core-ui。它是侧车：宿主拉起它、走 jsonl 帧握手（docs/ling/04-详细设计/02 §8）。
+# 产物按普通插件布局放，安装到数据根后与业务插件不可区分（04/07 §9）。
+# 页面在 main/ui/page.html，构建时转成字符串嵌进 exe：发布只有一个文件，
+# 也不怕磁盘上的前端文件被删（core-ui/02 §3.1）。
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/page_html.inc"
+    COMMAND python "${CMAKE_SOURCE_DIR}/tools/embed.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/page.html"
+            "${CMAKE_CURRENT_BINARY_DIR}/page_html.inc"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ui/page.html"
+            "${CMAKE_SOURCE_DIR}/tools/embed.py"
+    COMMENT "把页面嵌进 core-ui")
 
-target_link_libraries(ling-ui PRIVATE ling_core)
+add_executable(core-ui ui/main.cpp ui/page.cpp "${CMAKE_CURRENT_BINARY_DIR}/page_html.inc")
+target_include_directories(core-ui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
-ling_set_standard(ling-ui)
-ling_set_warnings(ling-ui)
-ling_set_hardening(ling-ui)
-ling_set_sanitizer(ling-ui)
+target_link_libraries(core-ui PRIVATE ling_core)
+
+ling_set_standard(core-ui)
+ling_set_warnings(core-ui)
+ling_set_hardening(core-ui)
+ling_set_sanitizer(core-ui)
+
+set_target_properties(core-ui PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${LING_PLUGIN_OUTPUT_DIR}/core-ui")
+add_custom_command(TARGET core-ui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/plugin.toml"
+            "${LING_PLUGIN_OUTPUT_DIR}/core-ui/plugin.toml")
 
 # Python 侧车 SDK 随宿主分发。插件经 LING_SDK_DIR 找到它，不必各自拷一份。
 add_custom_target(copy-python-sdk ALL

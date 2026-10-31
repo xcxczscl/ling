@@ -122,6 +122,7 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  disable <插件名>     停用插件，数据保留，随时能再启用\n");
     std::fprintf(out, "  logs [插件名]        查看日志；不给插件名时看 ling 自己的日志\n");
     std::fprintf(out, "  plan                 看接下来会自动做什么（只看，不改）\n");
+    std::fprintf(out, "  doctor               自检四项：依赖环、未撤销条目、端口、越权记录\n");
     std::fprintf(out, "  reload <插件名>      重新加载插件（换了新版本之后用）\n");
     std::fprintf(out, "  restart <插件名>     停一下再起来（不换版本，用于清状态）\n");
     std::fprintf(out, "  job list             列出定时任务\n");
@@ -402,21 +403,24 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     ling::Kernel kernel(args.data_dir);
     // 界面进程还没起，这时 registry.json 里的 ui_port 一定是上一次留下的陈旧值。
     kernel.clear_stale_ui_port();
-    // 先预装内置插件，再统一装载（04/07 §8.3）。
-    kernel.install_builtins(program_dir);
-    const std::size_t failures = kernel.load_all();
-    if (failures > 0) {
-        std::fprintf(stderr, "注意：有 %zu 个插件没能启动，用 ling plugins 看是哪些。\n", failures);
-    }
 
+    // 先开管理端口，再装插件。顺序不能反：session.json 是端口启动时生成的，
+    // 而 core-ui 这个侧车插件在装载时就要读它（拿口令连宿主）。端口先开，
+    // 装载阶段的插件才能一装就通。
     ling::AdminServer server(&kernel);
-    // 从 --port 起向上找，验收脚本用 8020 起的段也一样适用。
     const std::uint16_t last_port =
         static_cast<std::uint16_t>(args.port + (args.port < 8000 ? 99 : 79));
     const std::string error = server.start(args.port, last_port);
     if (!error.empty()) {
         std::fprintf(stderr, "启动失败：%s\n", error.c_str());
         return 3;
+    }
+
+    // 预装内置插件，再统一装载（04/07 §8.3）。
+    kernel.install_builtins(program_dir);
+    const std::size_t failures = kernel.load_all();
+    if (failures > 0) {
+        std::fprintf(stderr, "注意：有 %zu 个插件没能启动，用 ling plugins 看是哪些。\n", failures);
     }
 
     std::error_code shown_ec;
@@ -720,6 +724,7 @@ int main(int argc, char** argv) {
         {"disable", "kernel.disable", 30000, true},
         {"logs", "kernel.logs", 30000, true},
         {"plan", "kernel.plan", 30000, false},
+        {"doctor", "kernel.doctor", 30000, false},
         {"reload", "kernel.reload", 60000, true},
         {"restart", "kernel.restart", 60000, true},
     };
@@ -842,6 +847,31 @@ int main(int argc, char** argv) {
             std::printf("已卸载 %s，它的数据还留在：\n", plugin_id.c_str());
             std::printf("  %s\n", (ec ? data_dir : shown).string().c_str());
             std::printf("下次装回来会用上这份数据。要连它一起删，加 --purge。\n");
+        }
+    } else if (args.command == "doctor") {
+        // 四段固定输出，每段一行结论，有明细的缩进列出。只报告不修复。
+        if (document.is_discarded() || !document.contains("sections")) {
+            std::printf("%s\n", reply.result.c_str());
+        } else {
+            std::size_t bad = 0;
+            for (const auto& section : document["sections"]) {
+                const bool ok = section.value("ok", true);
+                if (!ok) {
+                    ++bad;
+                }
+                const std::string title = pad_right(section.value("title", ""), 16);
+                std::printf("%s %s%s\n", ok ? "  " : "！", title.c_str(),
+                            section.value("summary", "").c_str());
+                for (const auto& detail : section["details"]) {
+                    std::printf("      %s\n", detail.get<std::string>().c_str());
+                }
+            }
+            if (bad == 0) {
+                std::printf("\n四项都正常。\n");
+            } else {
+                std::printf("\n有 %zu 项需要注意，见上面。doctor 只报告，不会替你改。\n", bad);
+            }
+            return bad == 0 ? 0 : 1;
         }
     } else if (args.command == "plan") {
         if (document.is_discarded()) {

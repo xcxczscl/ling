@@ -457,7 +457,7 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    Loa
 std::size_t Kernel::install_builtins(const std::filesystem::path& program_dir) {
     program_dir_ = program_dir;
     static const char* const kBuiltins[] = {"core-settings", "core-plugin-manager", "core-log",
-                                            "core-job"};
+                                            "core-job", "core-ui"};
     std::size_t installed = 0;
     for (const char* id : kBuiltins) {
         std::error_code ec;
@@ -655,6 +655,152 @@ void Kernel::watch_tick() {
 
 // 单独一段：收侧车的帧、处理「2 秒后重启」。
 // 放在主循环里而不是线程里，理由与 kernel.tick 相同——宿主是单线程内核。
+
+std::string Kernel::doctor_report() {
+    // 四项检查，只报告不修复（LING-REQ-076）。每项一行结论加必要的明细，
+    // 全部在核心里算，不调任何插件方法——被修的插件不能是诊断的依据。
+    nlohmann::json sections = nlohmann::json::array();
+    bool all_ok = true;
+
+    // 一、依赖图有没有绕成环
+    {
+        const DepGraph graph = current_graph(nullptr);
+        const std::vector<std::string> cycle = find_cycle(graph);
+        nlohmann::json section;
+        section["key"] = "deps";
+        section["title"] = "依赖图";
+        section["ok"] = cycle.empty();
+        section["details"] = nlohmann::json::array();
+        if (cycle.empty()) {
+            section["summary"] = "无环";
+        } else {
+            all_ok = false;
+            // find_cycle 返回的环路首尾相同，直接按顺序拼就行，别再补尾巴。
+            std::string path;
+            for (std::size_t i = 0; i < cycle.size(); ++i) {
+                if (i > 0) {
+                    path += " → ";
+                }
+                path += cycle[i];
+            }
+            section["summary"] = "有环：" + path;
+            section["details"].push_back(path);
+        }
+        sections.push_back(section);
+    }
+
+    // 二、有没有撤销没撤净的条目
+    {
+        nlohmann::json section;
+        section["key"] = "undo";
+        section["title"] = "未撤销条目";
+        section["details"] = nlohmann::json::array();
+        if (pending_undo_.empty()) {
+            section["ok"] = true;
+            section["summary"] = "没有残留";
+        } else {
+            all_ok = false;
+            std::size_t total = 0;
+            for (const auto& item : pending_undo_) {
+                total += item.second;
+                section["details"].push_back(item.first + " 有 " + std::to_string(item.second) +
+                                             " 条改动没能退回去");
+            }
+            section["summary"] = std::to_string(pending_undo_.size()) + " 个插件共 " +
+                                 std::to_string(total) + " 条没退回去";
+        }
+        sections.push_back(section);
+    }
+
+    // 三、端口还在听吗，口令文件在不在、权限够不够紧
+    {
+        nlohmann::json section;
+        section["key"] = "port";
+        section["title"] = "端口与口令文件";
+        section["details"] = nlohmann::json::array();
+        bool ok = true;
+
+        if (admin_port_ == 0) {
+            ok = false;
+            section["details"].push_back("管理端口没在监听");
+        }
+
+        const auto session = data_root_ / "session.json";
+        std::error_code ec;
+        if (!std::filesystem::exists(session, ec)) {
+            ok = false;
+            section["details"].push_back("session.json 不存在：" + session.string());
+        } else {
+#ifdef _WIN32
+            // Windows 上还没收紧到「仅当前用户」的 ACL（docs/log/031 记过这条不足）。
+            // 与其假装检查过，不如把实际情况说出来。
+            section["details"].push_back(
+                "session.json 用的是系统默认权限，还没收紧到仅当前用户");
+#else
+            const auto mode = std::filesystem::status(session, ec).permissions();
+            const bool tight =
+                (mode & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) ==
+                std::filesystem::perms::none;
+            if (!tight) {
+                ok = false;
+                section["details"].push_back("session.json 对同组和其他用户可读，应当收紧到 0600");
+            }
+#endif
+        }
+
+        section["ok"] = ok;
+        section["summary"] = "端口 " + std::to_string(admin_port_) +
+                             (ok ? " 在监听" : " 有问题") + "，口令文件" +
+                             (std::filesystem::exists(session, ec) ? "在" : "缺失");
+        sections.push_back(section);
+    }
+
+    // 四、有没有人试过越权注册或越权广播
+    {
+        nlohmann::json section;
+        section["key"] = "violations";
+        section["title"] = "越权记录";
+        section["details"] = nlohmann::json::array();
+
+        // 取最新的一份内核日志，而不是「今天」那一份：跨零点时今天这份可能还没建。
+        std::error_code log_ec;
+        std::filesystem::path log_path;
+        for (const auto& entry : std::filesystem::directory_iterator(data_root_ / "logs", log_ec)) {
+            if (entry.path().extension() != ".log") {
+                continue;
+            }
+            if (log_path.empty() || entry.path().filename().string() >
+                                        log_path.filename().string()) {
+                log_path = entry.path();
+            }
+        }
+        std::vector<std::string> hits;
+        std::ifstream input(log_path);
+        std::string line;
+        while (std::getline(input, line)) {
+            if (line.find(err::kNamespaceViolation) != std::string::npos) {
+                hits.push_back(line);
+            }
+        }
+        section["ok"] = hits.empty();
+        if (hits.empty()) {
+            section["summary"] = "无";
+        } else {
+            all_ok = false;
+            section["summary"] = "今天有 " + std::to_string(hits.size()) + " 条";
+            const std::size_t begin = hits.size() > 10 ? hits.size() - 10 : 0;
+            for (std::size_t i = begin; i < hits.size(); ++i) {
+                section["details"].push_back(hits[i]);
+            }
+        }
+        sections.push_back(section);
+    }
+
+    nlohmann::json report;
+    report["ok"] = all_ok;
+    report["sections"] = sections;
+    return report.dump();
+}
 
 std::string Kernel::plan_json() {
     std::map<std::string, bool> active;
@@ -1001,6 +1147,11 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         nlohmann::json result;
         result["plugins"] = list;
         reply.result = result.dump();
+        return reply;
+    }
+
+    if (method == "kernel.doctor") {
+        reply.result = doctor_report();
         return reply;
     }
 
@@ -1850,6 +2001,13 @@ void Kernel::deactivate(LoadedPlugin& plugin) {
     if (report.attempted > 0) {
         log_info("loader", plugin.manifest.id + " 撤销效应 " + std::to_string(report.attempted) +
                                " 条，失败 " + std::to_string(report.failed) + " 条");
+    }
+    // 撤销失败的条目留在磁盘上的痕迹没法自动清。记下来给 doctor 看，
+    // 否则这类问题只在当次日志里出现一次，事后查不到。
+    if (report.failed > 0) {
+        pending_undo_[plugin.manifest.id] = report.failed;
+    } else {
+        pending_undo_.erase(plugin.manifest.id);
     }
     // 账本撤销完还有残留方法（例如插件绕过 Context 直接注册的），兜底清掉。
     const auto removed = router_.unregister_all(plugin.manifest.id);
