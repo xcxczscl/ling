@@ -23,6 +23,43 @@ namespace {
 
 std::atomic<bool> g_stop_requested{false};
 
+#ifdef _WIN32
+// 控制台代码页临时切到 UTF-8。
+//
+// 程序内部一律用 UTF-8：源码带 /utf-8 编译、日志文件写 UTF-8 字节。
+// 但 Windows 控制台默认代码页是 936（GBK），把 UTF-8 字节按 GBK 解读就会
+// 把「数据根」显示成「鏁版嵁鏍?」。这里在进程启动时切到 65001，退出时还原——
+// 不还原会污染同一个控制台里后续运行的其他程序。
+class ConsoleUtf8Scope {
+public:
+    ConsoleUtf8Scope() {
+        previous_input_ = ::GetConsoleCP();
+        previous_output_ = ::GetConsoleOutputCP();
+        if (previous_output_ != CP_UTF8) {
+            ::SetConsoleOutputCP(CP_UTF8);
+        }
+        if (previous_input_ != CP_UTF8) {
+            ::SetConsoleCP(CP_UTF8);
+        }
+    }
+    ~ConsoleUtf8Scope() {
+        if (previous_output_ != 0 && previous_output_ != CP_UTF8) {
+            ::SetConsoleOutputCP(previous_output_);
+        }
+        if (previous_input_ != 0 && previous_input_ != CP_UTF8) {
+            ::SetConsoleCP(previous_input_);
+        }
+    }
+
+    ConsoleUtf8Scope(const ConsoleUtf8Scope&) = delete;
+    ConsoleUtf8Scope& operator=(const ConsoleUtf8Scope&) = delete;
+
+private:
+    UINT previous_input_ = 0;
+    UINT previous_output_ = 0;
+};
+#endif
+
 void print_usage(std::FILE* out) {
     std::fprintf(out, "ling %s\n", ling::version_string());
     std::fprintf(out, "用法：ling <子命令> [选项] [--data-dir <路径>] [--json]\n");
@@ -210,6 +247,10 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // 必须放在任何输出之前：Kernel 构造时就会往 stderr 打日志。
+    ConsoleUtf8Scope console_utf8;
+#endif
     Args args;
     args.data_dir = default_data_root();
 
