@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <random>
 #include <system_error>
 #include <utility>
 
@@ -589,6 +590,29 @@ DepGraph Kernel::current_graph(std::map<std::string, bool>* active_out) {
 }
 
 void Kernel::watch_tick() {
+    pump_sidecars();
+
+    const auto now_for_restart = std::chrono::steady_clock::now();
+    for (auto& plugin : plugins_) {
+        if (!plugin.restart_pending || now_for_restart < plugin.restart_at) {
+            continue;
+        }
+        plugin.restart_pending = false;
+        log_info("sidecar", plugin.manifest.id + " 重启（第 " +
+                               std::to_string(plugin.restart_attempts) + " 次）");
+        const std::string code = activate(plugin);
+        if (code.empty()) {
+            plugin.state = PluginState::kActivated;
+            plugin.last_error.clear();
+            plugin.restart_attempts = 0;
+            publish_state(plugin, "activated");
+        } else {
+            plugin.state = PluginState::kFailed;
+            plugin.last_error = code;
+            publish_state(plugin, "failed", code);
+        }
+    }
+
     std::map<std::string, std::uint64_t> current;
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
@@ -627,6 +651,9 @@ void Kernel::watch_tick() {
     log_info("loader", "插件目录有变化，重新调和");
     reconcile();
 }
+
+// 单独一段：收侧车的帧、处理「2 秒后重启」。
+// 放在主循环里而不是线程里，理由与 kernel.tick 相同——宿主是单线程内核。
 
 std::string Kernel::plan_json() {
     std::map<std::string, bool> active;
@@ -936,7 +963,7 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             item["id"] = plugin.manifest.id;
             item["version"] = plugin.manifest.version;
             item["state"] = state_name(plugin.state);
-            item["track"] = "process";
+            item["track"] = plugin.sidecar ? "sidecar" : "process";
             if (!plugin.last_error.empty()) {
                 item["reason"] = plugin.last_error;
             }
@@ -1196,7 +1223,418 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
     return reply;
 }
 
-std::string Kernel::activate(LoadedPlugin& plugin) {    const auto path = plugins_dir() / plugin.manifest.id / plugin.manifest.artifact;
+namespace {
+
+// 侧车方法的代理：路由表里存的是这个函数，调用时转成一次 invoke 并等结果。
+int32_t sidecar_method_thunk(void* handler_ctx, const uint8_t* args, size_t args_len,
+                             uint8_t** out, size_t* out_len) {
+    auto* method = static_cast<SidecarMethodCtx*>(handler_ctx);
+    if (method == nullptr || method->kernel == nullptr) {
+        return 3;
+    }
+    const std::string text(reinterpret_cast<const char*>(args), args_len);
+    const CallOutcome outcome =
+        method->kernel->invoke_sidecar(method->plugin_id, method->method, text);
+    if (!outcome.ok()) {
+        return 3;  // 侧车没答上来：调用方按「方法失败」处理
+    }
+    if (!outcome.data.empty()) {
+        auto* buffer = static_cast<uint8_t*>(std::malloc(outcome.data.size()));
+        if (buffer == nullptr) {
+            return 1;
+        }
+        std::memcpy(buffer, outcome.data.data(), outcome.data.size());
+        *out = buffer;
+        *out_len = outcome.data.size();
+    } else {
+        *out = nullptr;
+        *out_len = 0;
+    }
+    return 0;
+}
+
+// 侧车事件订阅的代理：把事件写成一帧发过去。
+int32_t sidecar_event_thunk(void* handler_ctx, const char* topic, const uint8_t* payload,
+                            size_t len) {
+    auto* sub = static_cast<SidecarMethodCtx*>(handler_ctx);
+    if (sub == nullptr || sub->kernel == nullptr) {
+        return 3;
+    }
+    const std::string text(reinterpret_cast<const char*>(payload), len);
+    return sub->kernel->deliver_to_sidecar(sub->plugin_id, topic == nullptr ? "" : topic, text);
+}
+
+std::string make_sidecar_token() {
+    std::random_device device;
+    const char* digits = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(64);
+    for (int i = 0; i < 32; ++i) {
+        const auto byte = static_cast<unsigned>(device() & 0xFFu);
+        hex.push_back(digits[byte >> 4]);
+        hex.push_back(digits[byte & 0x0Fu]);
+    }
+    return hex;
+}
+
+}  // namespace
+
+std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
+    const auto dir = plugins_dir() / plugin.manifest.id;
+    const auto exe = dir / plugin.manifest.sidecar.executable;
+    const auto data_dir = dir / "data";
+    std::error_code ec;
+    std::filesystem::create_directories(data_dir, ec);
+
+    if (plugin.process != nullptr) {
+        plugin.process.reset();
+    }
+    plugin.sidecar = true;
+    plugin.sidecar_token = make_sidecar_token();
+    plugin.process = std::make_unique<Sidecar>();
+    const std::string start_error =
+        plugin.process->start(exe, dir, plugin.manifest.id, plugin.sidecar_token,
+                              data_dir.string());
+    if (!start_error.empty()) {
+        plugin.process.reset();
+        plugin.sidecar = false;
+        return std::string(err::kInternal) + " " + start_error;
+    }
+
+    // 握手：先等 hello，校验口令与插件名，再发 activate（04/02 §8.4）。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool greeted = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        sidecar::Frame frame;
+        bool closed = false;
+        std::string error;
+        if (!plugin.process->read(&frame, 100, &closed, &error)) {
+            if (closed) {
+                plugin.process.reset();
+                plugin.sidecar = false;
+                return std::string(err::kInternal) + " 侧车启动后立刻退出";
+            }
+            continue;
+        }
+        if (frame.op != "hello") {
+            log_warn("sidecar", plugin.manifest.id + " 握手阶段收到 " + frame.op + "，已断开");
+            plugin.process->terminate(1000);
+            plugin.process.reset();
+            plugin.sidecar = false;
+            return std::string(err::kProtocol) + " 握手第一帧必须是 hello";
+        }
+        const std::string token =
+            frame.fields.contains("token") && frame.fields["token"].is_string()
+                ? frame.fields["token"].get<std::string>()
+                : std::string();
+        const std::string who =
+            frame.fields.contains("plugin_id") && frame.fields["plugin_id"].is_string()
+                ? frame.fields["plugin_id"].get<std::string>()
+                : std::string();
+        if (token != plugin.sidecar_token) {
+            log_warn("sidecar", plugin.manifest.id + " 口令不对，已断开");
+            plugin.process->terminate(1000);
+            plugin.process.reset();
+            plugin.sidecar = false;
+            return std::string(err::kAuth) + " 侧车口令不匹配";
+        }
+        if (who != plugin.manifest.id) {
+            plugin.process->terminate(1000);
+            plugin.process.reset();
+            plugin.sidecar = false;
+            return std::string(err::kProtocol) + " 侧车自报的插件名是 " + who;
+        }
+        greeted = true;
+        break;
+    }
+    if (!greeted) {
+        plugin.process->terminate(500);
+        plugin.process.reset();
+        plugin.sidecar = false;
+        return std::string(err::kTimeout) + " 侧车 5 秒内没有握手";
+    }
+
+    sidecar::Frame activate;
+    activate.op = "activate";
+    activate.fields = {{"plugin_id", plugin.manifest.id},
+                       {"generation", plugin.generation},
+                       {"data_dir", data_dir.string()}};
+    std::string send_error;
+    if (!plugin.process->send(activate, &send_error)) {
+        plugin.process->terminate(500);
+        plugin.process.reset();
+        plugin.sidecar = false;
+        return std::string(err::kIo) + " 发 activate 失败：" + send_error;
+    }
+
+    plugin.state = PluginState::kActivated;
+    log_info("loader", plugin.manifest.id + " 侧车已启动（pid " +
+                           std::to_string(plugin.process->pid()) + "）");
+    return {};
+}
+
+LoadedPlugin* Kernel::find_sidecar(const std::string& plugin_id) {
+    LoadedPlugin* plugin = find(plugin_id);
+    if (plugin == nullptr || !plugin->sidecar || plugin->process == nullptr) {
+        return nullptr;
+    }
+    return plugin;
+}
+
+bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& frame) {
+    if (frame.op == "register_method") {
+        const std::string name = frame.fields.contains("name") && frame.fields["name"].is_string()
+                                     ? frame.fields["name"].get<std::string>()
+                                     : std::string();
+        if (name.empty()) {
+            return true;
+        }
+        const std::string key = plugin.manifest.id + "/" + name;
+        auto& ctx = sidecar_method_ctx_[key];
+        ctx = std::make_unique<SidecarMethodCtx>();
+        ctx->kernel = this;
+        ctx->plugin_id = plugin.manifest.id;
+        ctx->method = name;
+        const std::string code = router_.register_method(
+            plugin.manifest.id, name, reinterpret_cast<void*>(&sidecar_method_thunk), ctx.get(), 0);
+        if (!code.empty()) {
+            log_warn("sidecar", plugin.manifest.id + " 登记 " + name + " 失败：" + code);
+            return true;
+        }
+        plugin.sidecar_methods.push_back(name);
+        log_info("sidecar", plugin.manifest.id + " 登记方法 " + name);
+        return true;
+    }
+
+    if (frame.op == "subscribe") {
+        const std::string pattern =
+            frame.fields.contains("pattern") && frame.fields["pattern"].is_string()
+                ? frame.fields["pattern"].get<std::string>()
+                : std::string();
+        if (pattern.empty()) {
+            return true;
+        }
+        auto& ctx = sidecar_sub_ctx_[plugin.manifest.id];
+        if (ctx == nullptr) {
+            ctx = std::make_unique<SidecarMethodCtx>();
+            ctx->kernel = this;
+            ctx->plugin_id = plugin.manifest.id;
+        }
+        std::uint64_t sub_id = 0;
+        const std::string code = events_.subscribe(
+            plugin.manifest.id, pattern, reinterpret_cast<void*>(&sidecar_event_thunk),
+            ctx.get(), &sub_id);
+        if (!code.empty()) {
+            log_warn("sidecar", plugin.manifest.id + " 订阅 " + pattern + " 失败：" + code);
+            return true;
+        }
+        plugin.sidecar_subs.push_back(sub_id);
+        return true;
+    }
+
+    if (frame.op == "emit") {
+        const std::string topic = frame.fields.contains("topic") && frame.fields["topic"].is_string()
+                                      ? frame.fields["topic"].get<std::string>()
+                                      : std::string();
+        std::string payload;
+        if (frame.fields.contains("payload")) {
+            payload = frame.fields["payload"].is_string()
+                          ? frame.fields["payload"].get<std::string>()
+                          : frame.fields["payload"].dump();
+        }
+        if (!topic.empty()) {
+            emit_from(plugin.manifest.id, topic,
+                      reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+        }
+        return true;
+    }
+
+    if (frame.op == "call") {
+        // 侧车要调别人的方法：宿主代它调，结果按同一个 id 回去。
+        const std::string method = frame.fields.contains("method") &&
+                                           frame.fields["method"].is_string()
+                                       ? frame.fields["method"].get<std::string>()
+                                       : std::string();
+        const std::string args = frame.fields.contains("args") ? frame.fields["args"].dump() : "{}";
+        const CallOutcome outcome =
+            call(method, reinterpret_cast<const std::uint8_t*>(args.data()), args.size());
+        std::string error;
+        sidecar::Frame out;
+        out.id = frame.id;
+        out.op = outcome.ok() ? "result" : "error";
+        out.fields = outcome.ok()
+                         ? nlohmann::json{{"result", nlohmann::json::parse(
+                                                          std::string(outcome.data.begin(),
+                                                                      outcome.data.end()),
+                                                          nullptr, false)}}
+                         : nlohmann::json{{"error",
+                                           {{"code", outcome.code},
+                                            {"message", "宿主代调用失败"}}}};
+        plugin.process->send(out, &error);
+        return true;
+    }
+
+    if (frame.op == "error") {
+        log_warn("sidecar", plugin.manifest.id + " 报错：" + frame.fields.dump());
+        return true;
+    }
+
+    if (frame.op == "deactivated") {
+        return true;  // 停用流程在等它，这里不做事
+    }
+
+    return true;
+}
+
+void Kernel::pump_sidecars() {
+    for (auto& plugin : plugins_) {
+        if (!plugin.sidecar || plugin.process == nullptr) {
+            continue;
+        }
+        if (!plugin.process->alive()) {
+            const int code = plugin.process->exit_code();
+            sidecar_lost(plugin, "侧车退出（代码 " + std::to_string(code) + "）");
+            continue;
+        }
+        // 一轮最多收 16 帧，避免一个话多的侧车把整轮循环占住。
+        for (int i = 0; i < 16; ++i) {
+            sidecar::Frame frame;
+            bool closed = false;
+            std::string error;
+            if (!plugin.process->read(&frame, 0, &closed, &error)) {
+                if (closed) {
+                    sidecar_lost(plugin, "侧车断开");
+                }
+                break;
+            }
+            handle_sidecar_frame(plugin, frame);
+        }
+    }
+}
+
+void Kernel::sidecar_lost(LoadedPlugin& plugin, const std::string& reason) {
+    const std::string id = plugin.manifest.id;
+    router_.unregister_all(id);
+    events_.unsubscribe_all(id);
+    plugin.sidecar_methods.clear();
+    plugin.sidecar_subs.clear();
+    const int code = plugin.process != nullptr ? plugin.process->exit_code() : -1;
+    plugin.process.reset();
+    plugin.sidecar = false;
+
+    publish_state(plugin, "crashed", reason);
+    log_warn("sidecar", id + " " + reason);
+
+    const std::string policy = plugin.manifest.sidecar.restart;
+    const bool normal_exit = code == 0;
+    bool restart = policy == "always" || (policy == "on-crash" && !normal_exit);
+    if (policy == "never") {
+        restart = false;
+    }
+    if (restart && plugin.restart_attempts >= 3) {
+        // 连续三次起不来就别再试了：反复重启一个坏插件只会刷日志（§8.5）。
+        restart = false;
+        log_error("sidecar", id + " 连续 3 次起不来，停止重启");
+    }
+    if (restart) {
+        plugin.restart_pending = true;
+        plugin.restart_at = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        ++plugin.restart_attempts;
+        plugin.state = PluginState::kFailed;
+        plugin.last_error = reason + "，2 秒后重启";
+        return;
+    }
+
+    plugin.state = PluginState::kFailed;
+    plugin.last_error = reason;
+}
+
+CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::string& method,
+                                  const std::string& args_json) {
+    CallOutcome outcome;
+    LoadedPlugin* plugin = find_sidecar(plugin_id);
+    if (plugin == nullptr) {
+        outcome.code = err::kPluginMissing;
+        outcome.detail = "侧车没在运行";
+        return outcome;
+    }
+
+    const int call_id = static_cast<int>(next_sidecar_call_id_++);
+    nlohmann::json call_args = nlohmann::json::parse(args_json, nullptr, false);
+    if (call_args.is_discarded()) {
+        call_args = nlohmann::json::object();  // 空参就是空对象，别把 discarded 塞进帧里
+    }
+    sidecar::Frame invoke;
+    invoke.id = call_id;
+    invoke.op = "invoke";
+    invoke.fields = {{"method", method}, {"args", call_args}};
+    std::string error;
+    if (!plugin->process->send(invoke, &error)) {
+        outcome.code = err::kIo;
+        outcome.detail = "发 invoke 失败：" + error;
+        return outcome;
+    }
+
+    log_info("sidecar", "invoke #" + std::to_string(call_id) + " " + method);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        sidecar::Frame frame;
+        bool closed = false;
+        if (!plugin->process->read(&frame, 50, &closed, &error)) {
+            if (closed) {
+                outcome.code = err::kInternal;
+                outcome.detail = "侧车在调用过程中退出";
+                return outcome;
+            }
+            if (!error.empty()) {
+                // 解析失败也要说出来，否则一帧坏数据会让调用方干等到超时。
+                log_warn("sidecar", "无法解析侧车的帧：" + error);
+            }
+            continue;
+        }
+        if (frame.id == call_id && frame.op == "result") {
+            if (frame.fields.contains("result")) {
+                const std::string text = frame.fields["result"].is_string()
+                                             ? frame.fields["result"].get<std::string>()
+                                             : frame.fields["result"].dump();
+                outcome.data.assign(text.begin(), text.end());
+            }
+            return outcome;
+        }
+        if (frame.id == call_id && frame.op == "error") {
+            outcome.code = frame.fields.contains("error") && frame.fields["error"].contains("code")
+                               ? frame.fields["error"]["code"].get<std::string>()
+                               : err::kInternal;
+            return outcome;
+        }
+        // 等待期间来的别的帧照常处理（登记、事件、别人的调用）。
+        handle_sidecar_frame(*plugin, frame);
+    }
+
+    outcome.code = err::kTimeout;
+    outcome.detail = "侧车 30 秒没有应答";
+    return outcome;
+}
+
+int32_t Kernel::deliver_to_sidecar(const std::string& plugin_id, const std::string& topic,
+                                  const std::string& payload) {
+    LoadedPlugin* plugin = find_sidecar(plugin_id);
+    if (plugin == nullptr) {
+        return 3;
+    }
+    sidecar::Frame event;
+    event.op = "event";
+    event.fields = {{"topic", topic}, {"payload", payload}};
+    std::string error;
+    return plugin->process->send(event, &error) ? 0 : 3;
+}
+
+std::string Kernel::activate(LoadedPlugin& plugin) {
+    if (plugin.manifest.sidecar.present) {
+        return activate_sidecar(plugin);
+    }
+
+    const auto path = plugins_dir() / plugin.manifest.id / plugin.manifest.artifact;
     plugin.module = load_library(path);
     if (plugin.module == nullptr) {
         return std::string(err::kIo) + " 无法装载 " + path.string();
@@ -1243,6 +1681,40 @@ std::string Kernel::activate(LoadedPlugin& plugin) {    const auto path = plugin
 void Kernel::deactivate(LoadedPlugin& plugin) {
     // 对外状态在撤销开始前就变成 deactivated，撤销过程中的回调看到的是最终态。
     publish_state(plugin, "deactivated");
+
+    if (plugin.sidecar) {
+        // 先请它自己清理（关文件、退订），给它 2 秒；不走就强杀（04/02 §8.3）。
+        if (plugin.process != nullptr) {
+            sidecar::Frame frame;
+            frame.op = "deactivate";
+            std::string error;
+            plugin.process->send(frame, &error);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (std::chrono::steady_clock::now() < deadline) {
+                sidecar::Frame reply;
+                bool closed = false;
+                if (!plugin.process->read(&reply, 100, &closed, &error)) {
+                    if (closed) {
+                        break;
+                    }
+                    continue;
+                }
+                if (reply.op == "deactivated") {
+                    break;
+                }
+            }
+            plugin.process->terminate(2000);
+            plugin.process.reset();
+        }
+        plugin.sidecar = false;
+        plugin.sidecar_methods.clear();
+        plugin.sidecar_subs.clear();
+        router_.unregister_all(plugin.manifest.id);
+        events_.unsubscribe_all(plugin.manifest.id);
+        plugin.handle = nullptr;
+        plugin.state = PluginState::kInstalled;
+        return;
+    }
     const UndoReport report = plugin.ledger.undo_all();
     if (report.attempted > 0) {
         log_info("loader", plugin.manifest.id + " 撤销效应 " + std::to_string(report.attempted) +

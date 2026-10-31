@@ -13,6 +13,7 @@ add_library(ling_core STATIC
     src/manifest.cpp
     src/depgraph.cpp
     src/sidecar_proto.cpp
+    src/sidecar_host.cpp
     src/router.cpp
     src/ledger.cpp
     src/event.cpp

@@ -38,3 +38,36 @@ function(add_ling_plugin plugin_id)
                 "${plugin_dir}/plugin.toml"
                 "${LING_PLUGIN_OUTPUT_DIR}/${plugin_id}/plugin.toml")
 endfunction()
+
+# 侧车插件：产物是可执行文件，和动态库插件放在同一个运行目录里。
+# 画线依据 docs/ling/04-详细设计/02-插件装载与接口.md §8：宿主按 <编号>.exe 找它。
+function(add_ling_sidecar plugin_id)
+    if(ARGC GREATER 1)
+        set(plugin_dir "${ARGV1}")
+    else()
+        set(plugin_dir "${CMAKE_SOURCE_DIR}/plugins/${plugin_id}")
+    endif()
+
+    set(source "${plugin_dir}/main.cpp")
+    if(NOT EXISTS "${source}")
+        message(FATAL_ERROR "侧车 ${plugin_id} 缺少 main.cpp（${plugin_dir}）")
+    endif()
+
+    add_executable(${plugin_id} "${source}")
+    target_include_directories(${plugin_id} PRIVATE "${CMAKE_SOURCE_DIR}/main/include")
+    target_link_libraries(${plugin_id} PRIVATE ling_json)
+
+    ling_set_standard(${plugin_id})
+    ling_set_warnings(${plugin_id})
+    ling_set_hardening(${plugin_id})
+    ling_set_sanitizer(${plugin_id})
+
+    set_target_properties(${plugin_id} PROPERTIES
+        OUTPUT_NAME "${plugin_id}"
+        RUNTIME_OUTPUT_DIRECTORY "${LING_PLUGIN_OUTPUT_DIR}/${plugin_id}")
+
+    add_custom_command(TARGET ${plugin_id} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${plugin_dir}/plugin.toml"
+                "${LING_PLUGIN_OUTPUT_DIR}/${plugin_id}/plugin.toml")
+endfunction()

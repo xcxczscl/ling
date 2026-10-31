@@ -22,9 +22,10 @@ namespace {
 // MVP 阶段的两条临时限制（docs/ling/11-MVP 范围.md §4.2）：
 // 声明了依赖或走侧车轨道的插件一律拒绝装载，而不是静默忽略。
 // 静默忽略会让插件以为条件已满足，出错现象跑到调用时才出现。
-// 依赖声明随 M3 放开（04/04）；侧车轨道要到 M4，仍然拒绝。
+// 依赖声明随 M3 放开（04/04）；侧车随 M4 放开（04/02 §8）。
+// 两个开关留着，是为了将来若要临时关掉某条轨道时不用翻代码。
 constexpr bool kMvpRejectRequires = false;
-constexpr bool kMvpRejectSidecar = true;
+constexpr bool kMvpRejectSidecar = false;
 
 constexpr const char* kSupportedApis[] = {"1", "0"};
 
@@ -256,6 +257,13 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
     if (manifest.sidecar.present && unsafe_relative(manifest.sidecar.executable)) {
         result.code = err::kManifestInvalid;
         result.detail = "sidecar.executable 必须是插件目录内的相对路径";
+        return result;
+    }
+    if (manifest.sidecar.present &&
+        !std::filesystem::exists(dir / manifest.sidecar.executable)) {
+        // 侧车装不上时最常见的错就是「清单写了，exe 没跟着来」。
+        result.code = err::kManifestInvalid;
+        result.detail = "找不到侧车可执行文件 " + manifest.sidecar.executable;
         return result;
     }
     if (!manifest.sidecar.present && !has_artifact) {

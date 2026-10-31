@@ -1,0 +1,9 @@
+id = "demo-sidecar"
+version = "1.0.0"
+api = "1"
+name = "侧车示例"
+description = "M4 用：独立进程，通过 jsonl 帧与宿主通信，注册 demo-sidecar.ping 并订阅 kernel.tick"
+
+[sidecar]
+executable = "demo-sidecar.exe"
+restart = "on-crash"
