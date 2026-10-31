@@ -110,14 +110,25 @@ TEST_CASE("缺少产物被拒", "[manifest]") {
     std::filesystem::remove_all(dir.parent_path());
 }
 
-TEST_CASE("MVP 阶段拒绝依赖声明与侧车", "[manifest]") {
+TEST_CASE("依赖声明接受，写法错要拦住，侧车仍拒绝", "[manifest]") {
+    // 依赖声明随 M3 放开（04/04）；写错的要在这里拦住，否则它会永远不满足，
+    // 用户只看到「装不上」却不知道错在哪。
     auto with_deps = base_manifest("demo-deps");
     with_deps += "[requires]\nplugins = [\"core-ui@1\"]\n";
     const auto dir1 = make_plugin_dir("demo-deps", with_deps);
     const auto r1 = ling::load_manifest(dir1, "0.0.1");
-    REQUIRE_FALSE(r1.ok());
-    CHECK(r1.detail.find("依赖") != std::string::npos);
+    REQUIRE(r1.ok());
+    REQUIRE(r1.manifest->requires_plugins.size() == 1);
+    CHECK(r1.manifest->requires_plugins[0] == "core-ui@1");
     std::filesystem::remove_all(dir1);
+
+    auto bad_deps = base_manifest("demo-baddeps");
+    bad_deps += "[requires]\nplugins = [\"core-ui@1.2.3.4\"]\n";
+    const auto dir_bad = make_plugin_dir("demo-baddeps", bad_deps);
+    const auto r_bad = ling::load_manifest(dir_bad, "0.0.1");
+    REQUIRE_FALSE(r_bad.ok());
+    CHECK(r_bad.detail.find("依赖写法不对") != std::string::npos);
+    std::filesystem::remove_all(dir_bad);
 
     auto with_sidecar = base_manifest("demo-side");
     with_sidecar += "[sidecar]\nexecutable = \"sidecar/run.exe\"\n";

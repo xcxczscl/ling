@@ -766,10 +766,22 @@ int main(int argc, char** argv) {
     } else if (args.command == "shutdown") {
         std::printf("已通知 ling 退出。\n");
     } else if (args.command == "install") {
-        if (version.empty()) {
-            std::printf("已安装 %s，现在可以用。\n", plugin_id.c_str());
+        const std::string plugin_state = field("state");
+        const bool ready = plugin_state.empty() || plugin_state == "activated";
+        if (ready) {
+            if (version.empty()) {
+                std::printf("已安装 %s，现在可以用。\n", plugin_id.c_str());
+            } else {
+                std::printf("已安装 %s %s，现在可以用。\n", plugin_id.c_str(), version.c_str());
+            }
         } else {
-            std::printf("已安装 %s %s，现在可以用。\n", plugin_id.c_str(), version.c_str());
+            // 依赖没满足时装是装上了，但用不了。回显必须说清，否则用户以为能用了。
+            std::printf("已安装 %s %s，但现在还用不了。\n", plugin_id.c_str(), version.c_str());
+            const std::string reason = field("reason");
+            if (!reason.empty()) {
+                std::printf("  原因：%s\n", reason.c_str());
+                std::printf("  把缺的装上就会自动启用，不用重启。\n");
+            }
         }
         if (document.contains("reason")) {
             std::printf("但它启动失败：%s\n", document.value("reason", "").c_str());

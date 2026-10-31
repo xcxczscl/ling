@@ -11,6 +11,7 @@ target_include_directories(ling_plugin_api INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}
 add_library(ling_core STATIC
     src/version.cpp
     src/manifest.cpp
+    src/depgraph.cpp
     src/router.cpp
     src/ledger.cpp
     src/event.cpp

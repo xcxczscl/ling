@@ -12,6 +12,7 @@
 #include <system_error>
 #include <utility>
 
+#include "ling/depgraph.hpp"
 #include "ling/errors.hpp"
 #include "ling/log.hpp"
 #include "ling/version.hpp"
@@ -531,7 +532,98 @@ std::size_t Kernel::load_all() {
             publish_state(plugins_.back(), "activated");
         }
     }
+
+    // 全部装载完再调和：前面装载时依赖方可能排在前面，那时被依赖方还没就位。
+    reconcile();
     return failures;
+}
+
+std::string Kernel::reconcile() {
+    std::vector<InstalledEntry> installed;
+    std::map<std::string, bool> active;
+
+    // 从磁盘重建快照：停用与未装载的插件不在装载表里，只看装载表会漏掉它们，
+    // 导致「先装依赖方」时算不出它其实已经装好了。
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+        const auto dir = entry.path();
+        if (!std::filesystem::exists(dir / "plugin.toml", ec)) {
+            continue;  // 只剩 data/ 的目录算未安装
+        }
+        const ManifestResult parsed = load_manifest(dir, host_version_string());
+        if (!parsed.ok()) {
+            log_warn("loader", dir.filename().string() + " 清单非法，不参与调和：" +
+                                   parsed.detail);
+            continue;
+        }
+        InstalledEntry item;
+        item.id = parsed.manifest->id;
+        item.version = parsed.manifest->version;
+        item.requires = parsed.manifest->requires_plugins;
+        installed.push_back(std::move(item));
+
+        const LoadedPlugin* plugin = find(parsed.manifest->id);
+        active[parsed.manifest->id] =
+            plugin != nullptr && plugin->state == PluginState::kActivated;
+    }
+
+    const DepGraph graph = build_graph(installed);
+
+    const auto cycle = find_cycle(graph);
+    if (!cycle.empty()) {
+        // 成环时一步都不走：半截计划比不动更难排查（04/04 §5.4）。
+        std::string text = std::string(err::kDependencyCycle) + " 依赖成环：";
+        for (std::size_t i = 0; i < cycle.size(); ++i) {
+            text += (i == 0 ? "" : " → ");
+            text += cycle[i];
+        }
+        log_error("loader", text);
+        return text;
+    }
+
+    for (const auto& item : graph.unmet) {
+        log_warn("loader", item.plugin_id + " 的依赖不满足：" + item.reason);
+    }
+    // 未满足的原因先全部记下：一直没激活过的插件不会走「停用」那段，
+    // 不记的话列表里只显示「已停用」，用户看不出为什么。
+    for (const auto& entry : installed) {
+        const std::string text = graph.unmet_text(entry.id);
+        if (text.empty()) {
+            blocked_.erase(entry.id);
+        } else {
+            blocked_[entry.id] = text;
+        }
+    }
+
+    for (const auto& step : compute_plan(graph, active)) {
+        if (!step.activate) {
+            const std::string reason = graph.unmet_text(step.plugin_id);
+            const std::string code = unload_one(step.plugin_id);
+            if (!code.empty()) {
+                log_warn("loader", "调和时停用失败 " + step.plugin_id + "：" + code);
+                continue;
+            }
+            blocked_[step.plugin_id] = reason;
+            log_info("loader", step.plugin_id + " 因依赖不满足停用：" + reason);
+            const LoadedPlugin* plugin = find(step.plugin_id);
+            if (plugin != nullptr) {
+                publish_state(*plugin, "deactivated", reason);
+            }
+            continue;
+        }
+
+        blocked_.erase(step.plugin_id);
+        const std::string code = load_one(step.plugin_id);
+        if (!code.empty()) {
+            log_warn("loader", "调和时激活失败 " + step.plugin_id + "：" + code);
+        } else {
+            log_info("loader", "依赖满足，激活 " + step.plugin_id);
+        }
+    }
+    return {};
 }
 
 std::string Kernel::load_one(const std::string& plugin_id) {
@@ -733,6 +825,11 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             item["version"] = parsed.ok() ? parsed.manifest->version : std::string();
             item["state"] = "deactivated";
             item["track"] = "process";
+            // 因依赖不满足停用的，把原因带上：否则用户只看到「已停用」，不知道为什么。
+            const auto blocked = blocked_.find(id);
+            if (blocked != blocked_.end()) {
+                item["reason"] = blocked->second;
+            }
             list.push_back(item);
         }
         nlohmann::json result;
@@ -753,16 +850,24 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             fill_error(reply, code);
             return reply;
         }
-        // 安装完立刻装载并激活，命令行才能看到 activated。
+        // 安装完不直接装载，先调和一次：新装的插件可能依赖别人，也可能让别的
+        // 插件从「等依赖」变成「可以起」。顺序与原因都由调和统一决定（04/04 §5）。
         const ManifestResult parsed = load_manifest(path, host_version_string());
         const std::string id = parsed.ok() ? parsed.manifest->id : std::string();
-        const std::string load_code = id.empty() ? std::string() : load_one(id);
         nlohmann::json result;
         result["id"] = id;
         result["version"] = parsed.ok() ? parsed.manifest->version : std::string();
-        result["state"] = load_code.empty() ? "activated" : "failed";
-        if (!load_code.empty()) {
-            result["reason"] = load_code;
+        if (!id.empty()) {
+            reconcile();
+        }
+        const LoadedPlugin* plugin = id.empty() ? nullptr : find(id);
+        const bool activated = plugin != nullptr && plugin->state == PluginState::kActivated;
+        result["state"] = activated ? "activated" : "deactivated";
+        if (!activated) {
+            const auto blocked = blocked_.find(id);
+            if (blocked != blocked_.end()) {
+                result["reason"] = blocked->second;
+            }
         }
         reply.result = result.dump();
         return reply;
@@ -781,6 +886,9 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             fill_error(reply, code);
             return reply;
         }
+        blocked_.erase(id);
+        // 卸掉被依赖的插件后，依赖它的那些要停下来，这里统一处理。
+        reconcile();
         reply.result = "{\"id\":\"" + id + "\"}";
         return reply;
     }

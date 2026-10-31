@@ -4,6 +4,7 @@ add_executable(ling_unit
     unit/test_manifest.cpp
     unit/test_router.cpp
     unit/test_event.cpp
+    unit/test_depgraph.cpp
 )
 
 target_link_libraries(ling_unit PRIVATE ling_core ling_catch2)

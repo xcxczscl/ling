@@ -84,6 +84,11 @@ public:
     // 管理端口启动后写进 registry.json，供命令行找端口。
     void note_admin_port(std::uint16_t port);
 
+    // 按依赖图调和一次：把需求不满足的插件停用，把需求已满足的插件激活。
+    // 每次安装、卸载、启用、停用之后都调一次；空闲时不做定时重算（04/04 §7）。
+    // 返回空表示成功，否则是错误说明（成环等）。
+    std::string reconcile();
+
     // 清掉 registry.json 里上一次留下的界面端口。
     // 界面被强杀时来不及自己清理，宿主要在下一次启动时把陈旧值抹掉，
     // 否则「界面地址」指向一个已经没人监听的端口。
@@ -147,6 +152,8 @@ private:
     Router router_;
     EventBus events_;
     std::vector<LoadedPlugin> plugins_;
+    // 依赖不满足导致停用的原因。停用的插件不在装载表里，原因得单独记。
+    std::map<std::string, std::string> blocked_;
     std::map<std::string, std::unique_ptr<PluginContext>> contexts_;
     std::uint64_t next_generation_ = 1;
     std::uint16_t admin_port_ = 0;

@@ -2,5 +2,6 @@
 include(${CMAKE_SOURCE_DIR}/tools/cmake/LingPlugin.cmake)
 
 add_subdirectory(demo-a)
+add_subdirectory(demo-b)
 add_subdirectory(demo-caller)
 add_subdirectory(demo-bench)

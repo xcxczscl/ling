@@ -1,0 +1,8 @@
+id = "demo-b"
+version = "1.0.0"
+api = "1"
+name = "依赖演示插件"
+description = "S3 用：声明依赖 demo-a@1，验证「先装依赖方、后装被依赖方会自动激活」"
+
+[requires]
+plugins = ["demo-a@1"]

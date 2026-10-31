@@ -1,5 +1,7 @@
 #include "ling/manifest.hpp"
 
+#include "ling/depgraph.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -20,7 +22,8 @@ namespace {
 // MVP 阶段的两条临时限制（docs/ling/11-MVP 范围.md §4.2）：
 // 声明了依赖或走侧车轨道的插件一律拒绝装载，而不是静默忽略。
 // 静默忽略会让插件以为条件已满足，出错现象跑到调用时才出现。
-constexpr bool kMvpRejectRequires = true;
+// 依赖声明随 M3 放开（04/04）；侧车轨道要到 M4，仍然拒绝。
+constexpr bool kMvpRejectRequires = false;
 constexpr bool kMvpRejectSidecar = true;
 
 constexpr const char* kSupportedApis[] = {"1", "0"};
@@ -261,7 +264,16 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
         return result;
     }
 
-    // MVP 阶段的两条临时限制。
+    // 依赖声明：写法在装载前就要拦住。写错一条的后果是它永远不满足，
+    // 而用户只看到「装不上」，所以这里逐条解析，错在哪一条直接指出来。
+    for (const auto& raw : manifest.requires_plugins) {
+        Dependency dependency;
+        if (!parse_requirement(raw, &dependency)) {
+            result.code = err::kManifestInvalid;
+            result.detail = "依赖写法不对：" + raw + "（应写成「插件名」或「插件名@主版本」）";
+            return result;
+        }
+    }
     if (kMvpRejectRequires && !manifest.requires_plugins.empty()) {
         result.code = err::kManifestInvalid;
         result.detail = "本版不支持依赖声明（M3 起支持）";
