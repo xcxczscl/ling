@@ -121,6 +121,7 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  enable <插件名>      启用插件\n");
     std::fprintf(out, "  disable <插件名>     停用插件，数据保留，随时能再启用\n");
     std::fprintf(out, "  logs [插件名]        查看日志；不给插件名时看 ling 自己的日志\n");
+    std::fprintf(out, "  plan                 看接下来会自动做什么（只看，不改）\n");
     std::fprintf(out, "  reload <插件名>      重新加载插件（换了新版本之后用）\n");
     std::fprintf(out, "  restart <插件名>     停一下再起来（不换版本，用于清状态）\n");
     std::fprintf(out, "  job list             列出定时任务\n");
@@ -431,6 +432,8 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
         }
         // 心跳挂在同一轮循环里，跟着已有的 200 毫秒节拍走，不另起唤醒。
         kernel.publish_tick();
+        // 改清单、换产物之后自动重算，不用手动 reload。
+        kernel.watch_tick();
     }
     server.stop();
     std::printf("ling 已停止。\n");
@@ -714,6 +717,7 @@ int main(int argc, char** argv) {
         {"enable", "kernel.enable", 30000, true},
         {"disable", "kernel.disable", 30000, true},
         {"logs", "kernel.logs", 30000, true},
+        {"plan", "kernel.plan", 30000, false},
         {"reload", "kernel.reload", 60000, true},
         {"restart", "kernel.restart", 60000, true},
     };
@@ -834,6 +838,33 @@ int main(int argc, char** argv) {
             std::printf("已卸载 %s，它的数据还留在：\n", plugin_id.c_str());
             std::printf("  %s\n", (ec ? data_dir : shown).string().c_str());
             std::printf("下次装回来会用上这份数据。要连它一起删，加 --purge。\n");
+        }
+    } else if (args.command == "plan") {
+        if (document.is_discarded()) {
+            std::printf("%s\n", reply.result.c_str());
+        } else if (!document.value("ok", true)) {
+            std::printf("%s\n", document.value("message", "").c_str());
+        } else {
+            const auto& steps = document["steps"];
+            if (steps.empty()) {
+                std::printf("现在什么都不用做。\n");
+            } else {
+                std::printf("下次会自动做 %zu 件事：\n", steps.size());
+                for (const auto& step : steps) {
+                    const bool activate = step.value("action", "") == "activate";
+                    std::printf("  %u. %s %s\n", step.value("index", 0u),
+                                activate ? "启用" : "停用",
+                                step.value("plugin", "").c_str());
+                }
+            }
+            const auto& blocked = document["blocked"];
+            if (!blocked.empty()) {
+                std::printf("\n这些插件暂时起不来：\n");
+                for (const auto& item : blocked) {
+                    std::printf("  %s  %s\n", item.value("plugin", "").c_str(),
+                                item.value("reason", "").c_str());
+                }
+            }
         }
     } else if (args.command == "reload" || args.command == "restart") {
         const std::string plugin_state = field("state");

@@ -538,14 +538,15 @@ std::size_t Kernel::load_all() {
     return failures;
 }
 
-std::string Kernel::reconcile() {
+// 从磁盘重建一次「现在的样子」：装了哪些、哪些在跑、哪些装着但用不了。
+// 调和与预览都要它，所以单独拎出来——两边各写一份的话，预览说的和实际做的迟早对不上。
+DepGraph Kernel::current_graph(std::map<std::string, bool>* active_out) {
     std::vector<InstalledEntry> installed;
     std::map<std::string, bool> active;
     // 装着但用不了的：被停用的、启动失败的。依赖它们的插件要一起停（04/04 §5.1）。
     std::set<std::string> unavailable(reloading_.begin(), reloading_.end());
 
-    // 从磁盘重建快照：停用与未装载的插件不在装载表里，只看装载表会漏掉它们，
-    // 导致「先装依赖方」时算不出它其实已经装好了。
+    // 只看装载表会漏掉停用与未装载的插件，导致「先装依赖方」时算不出它其实已经装好。
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
         if (!entry.is_directory()) {
@@ -569,8 +570,7 @@ std::string Kernel::reconcile() {
         installed.push_back(std::move(item));
 
         const LoadedPlugin* plugin = find(id);
-        const bool activated = plugin != nullptr && plugin->state == PluginState::kActivated;
-        active[id] = activated;
+        active[id] = plugin != nullptr && plugin->state == PluginState::kActivated;
 
         if (is_disabled(id)) {
             unavailable.insert(id);
@@ -578,11 +578,101 @@ std::string Kernel::reconcile() {
             active[id] = true;
         } else if (plugin != nullptr && plugin->state == PluginState::kFailed) {
             unavailable.insert(id);
-            active[id] = true;  // 失败的重试留给人 decide（install/enable），不在这里循环重试
+            active[id] = true;  // 失败的重试留给人决定（install/enable），不在这里循环重试
         }
     }
 
-    const DepGraph graph = build_graph(installed, unavailable);
+    if (active_out != nullptr) {
+        *active_out = active;
+    }
+    return build_graph(installed, unavailable);
+}
+
+void Kernel::watch_tick() {
+    std::map<std::string, std::uint64_t> current;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+        const auto manifest = entry.path() / "plugin.toml";
+        if (!std::filesystem::exists(manifest, ec)) {
+            continue;
+        }
+        // 用清单的修改时间做指纹：改依赖、改版本、换产物都会碰它。
+        const auto stamp = std::filesystem::last_write_time(manifest, ec);
+        if (ec) {
+            continue;
+        }
+        current[entry.path().filename().string()] =
+            static_cast<std::uint64_t>(stamp.time_since_epoch().count());
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (current != watch_stamps_) {
+        watch_stamps_ = current;
+        watch_dirty_ = true;
+        watch_last_change_ = now;
+        return;  // 刚变过，等安静下来再算
+    }
+    if (!watch_dirty_) {
+        return;
+    }
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - watch_last_change_) <
+        std::chrono::milliseconds(200)) {
+        return;  // 还在合并窗口里：连续几次改动只算一次
+    }
+
+    watch_dirty_ = false;
+    log_info("loader", "插件目录有变化，重新调和");
+    reconcile();
+}
+
+std::string Kernel::plan_json() {
+    std::map<std::string, bool> active;
+    const DepGraph graph = current_graph(&active);
+
+    nlohmann::json result;
+    result["steps"] = nlohmann::json::array();
+    result["blocked"] = nlohmann::json::array();
+
+    const auto cycle = find_cycle(graph);
+    if (!cycle.empty()) {
+        result["ok"] = false;
+        result["code"] = err::kDependencyCycle;
+        std::string text;
+        for (std::size_t i = 0; i < cycle.size(); ++i) {
+            text += (i == 0 ? "" : " → ");
+            text += cycle[i];
+        }
+        result["message"] = "依赖成环：" + text;
+        return result.dump();
+    }
+
+    const auto plan = compute_plan(graph, active);
+    std::uint32_t index = 0;
+    for (const auto& step : plan) {
+        result["steps"].push_back({{"index", ++index},
+                                   {"action", step.activate ? "activate" : "deactivate"},
+                                   {"plugin", step.plugin_id}});
+    }
+    // 装着但起不来的，一起列出来：用户看「为什么它没跑」时不用再去翻日志。
+    std::set<std::string> reported;
+    for (const auto& item : graph.unmet) {
+        if (reported.count(item.plugin_id) != 0) {
+            continue;
+        }
+        reported.insert(item.plugin_id);
+        result["blocked"].push_back(
+            {{"plugin", item.plugin_id}, {"reason", graph.unmet_text(item.plugin_id)}});
+    }
+    result["ok"] = true;
+    return result.dump();
+}
+
+std::string Kernel::reconcile() {
+    std::map<std::string, bool> active;
+    const DepGraph graph = current_graph(&active);
 
     const auto cycle = find_cycle(graph);
     if (!cycle.empty()) {
@@ -601,12 +691,12 @@ std::string Kernel::reconcile() {
     }
     // 未满足的原因先全部记下：一直没激活过的插件不会走「停用」那段，
     // 不记的话列表里只显示「已停用」，用户看不出为什么。
-    for (const auto& entry : installed) {
-        const std::string text = graph.unmet_text(entry.id);
+    for (const auto& item : active) {
+        const std::string text = graph.unmet_text(item.first);
         if (text.empty()) {
-            blocked_.erase(entry.id);
+            blocked_.erase(item.first);
         } else {
-            blocked_[entry.id] = text;
+            blocked_[item.first] = text;
         }
     }
 
@@ -876,6 +966,12 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         nlohmann::json result;
         result["plugins"] = list;
         reply.result = result.dump();
+        return reply;
+    }
+
+    if (method == "kernel.plan") {
+        // 只看不做：界面与命令行先用它告诉用户「点下去会发生什么」。
+        reply.result = plan_json();
         return reply;
     }
 

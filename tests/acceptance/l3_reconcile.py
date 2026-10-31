@@ -50,6 +50,10 @@ def main():
     # 输出写文件而不是管道：管道没人读时，宿主写日志可能阻塞在写入上，
     # 于是「让它退出」这一步会等不到进程结束。写文件没有这个坑。
     host_log = (data / "stdout.log").open("w", encoding="utf-8")
+    def edit_manifest(plugin_id, text):
+        """直接改已安装插件目录里的清单，模拟「换了依赖声明」。"""
+        (data / "plugins" / plugin_id / "plugin.toml").write_text(text, encoding="utf-8")
+
     host = subprocess.Popen([str(exe), "serve", "--data-dir", str(data), "--port", "7900"],
                             stdout=host_log, stderr=subprocess.STDOUT)
     time.sleep(2)
@@ -100,6 +104,30 @@ def main():
 
     code, out = ling("reload", "not-installed")
     check("重载不存在的插件给出人话", code == 4 and "找不到这个插件" in out, out.strip()[:60])
+
+    # 预览：只看不做
+    code, out = ling("plan")
+    check("没有待办时 plan 说清楚", code == 0 and "什么都不用做" in out, out.strip()[:60])
+
+    code, out = ling("disable", "demo-a")   # 让 demo-b 暂时起不来
+    code, out = ling("plan")
+    check("plan 列出起不来的插件与原因",
+          code == 0 and "demo-b" in out and "用不了" in out, out.strip()[:120])
+    ling("enable", "demo-a")
+
+    # 改清单自动重算：把 demo-b 的依赖改成装不上的，等它自己停
+    manifest = (data / "plugins" / "demo-b" / "plugin.toml").read_text(encoding="utf-8")
+    edit_manifest("demo-b", manifest.replace('plugins = ["demo-a@1"]', 'plugins = ["demo-x@1"]'))
+    time.sleep(1.5)   # 200 毫秒合并窗口 + 一轮轮询
+    item_b = state_of("demo-b")
+    check("改清单后自动重算，不用 reload",
+          item_b["state"] == "deactivated" and "demo-x" in item_b.get("reason", ""),
+          str(item_b)[:110])
+
+    edit_manifest("demo-b", manifest)
+    time.sleep(1.5)
+    item_b = state_of("demo-b")
+    check("改回来也自动恢复", item_b["state"] == "activated", str(item_b)[:110])
 
     code, out = ling("uninstall", "demo-a")
     check("卸掉被依赖方", code == 0, out.strip()[:50])

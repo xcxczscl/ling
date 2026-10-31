@@ -2,6 +2,7 @@
 // 语义依据 docs/ling/04-详细设计/01-内核四服务.md 与 02-插件装载与接口.md。
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "ling/event.hpp"
+#include "ling/depgraph.hpp"
 #include "ling/ledger.hpp"
 #include "ling/manifest.hpp"
 #include "ling/plugin_api.h"
@@ -85,6 +87,14 @@ public:
     // 管理端口启动后写进 registry.json，供命令行找端口。
     void note_admin_port(std::uint16_t port);
 
+    // 主循环每轮调一次：看插件目录有没有变化（改清单、换产物），
+    // 有就等安静 200 毫秒后重算一次。合并窗口见 04/04 §7.2。
+    void watch_tick();
+
+    // 算一遍「接下来会做什么」，但一步也不执行。给命令行与界面预览用。
+    // 返回 JSON：{ok, steps:[{index,action,plugin}], blocked:[{plugin,reason}]}。
+    std::string plan_json();
+
     // 按依赖图调和一次：把需求不满足的插件停用，把需求已满足的插件激活。
     // 每次安装、卸载、启用、停用之后都调一次；空闲时不做定时重算（04/04 §7）。
     // 返回空表示成功，否则是错误说明（成环等）。
@@ -129,6 +139,9 @@ public:
                              const std::uint8_t* value, std::size_t len);
 
 private:
+    // 当前状态的快照（装了哪些、哪些在跑、哪些用不了）与依赖图。
+    DepGraph current_graph(std::map<std::string, bool>* active_out);
+
     LoadedPlugin* find(const std::string& plugin_id);
     std::string activate(LoadedPlugin& plugin);
     void deactivate(LoadedPlugin& plugin);
@@ -157,6 +170,11 @@ private:
     std::map<std::string, std::string> blocked_;
     // 调和计划编号，单调递增。每一步广播 kernel.plan.step 时带上它。
     std::uint64_t next_plan_id_ = 1;
+    // 目录变化监视：插件清单的最后修改时间，用来判断要不要重算。
+    std::map<std::string, std::uint64_t> watch_stamps_;
+    bool watch_dirty_ = false;
+    std::chrono::steady_clock::time_point watch_last_change_{};
+
     // 正在重载的插件。重载期间把它当成「不可用」，依赖它的先停下来，
     // 换完再回来——否则会出现「新版本还没就位，调用方已经在调」。
     std::set<std::string> reloading_;
