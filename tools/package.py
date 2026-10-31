@@ -12,6 +12,7 @@ desktop 标志：zip 里带上 desktop 版 core-ui（默认构建是 webui）。
 """
 
 import argparse
+import os
 import pathlib
 import shutil
 import subprocess
@@ -22,6 +23,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # 随包分发、但只属于内置插件的，demo 示例不打包。
 BUILTIN_PLUGINS = ["core-settings", "core-plugin-manager", "core-log", "core-job", "core-ui"]
+
+# VC++ 运行库（MSVC 动态 CRT）。ling.exe 与侧车 core-ui.exe 都是 /MD 编译，
+# 干净机器上没有这些 DLL 会启动失败（报「找不到 MSVCP140.dll」）。UCRT 的
+# api-ms-win-crt-*.dll 是 Win10/11 系统自带，不用打包；这里只带非系统组件。
+# 来源：VS 的 VC/Redist/MSVC/<版本>/x64/Microsoft.VC145.CRT（微软许可再分发）。
+CRT_DIR = ROOT / "third_party" / "vc-redist"
+
+
+def crt_dlls():
+    """返回要随包分发的 CRT DLL（按文件名排序，稳定顺序）。"""
+    return sorted(CRT_DIR.glob("*.dll"))
 
 
 def version_string(exe):
@@ -47,6 +59,11 @@ def build_zip(preset, desktop):
     print(f"打包便携 zip → {archive.name}")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(exe, "ling.exe")
+        # VC++ 运行库：放两份——根（宿主 ling.exe + 进程内插件）、
+        # plugins/core-ui（侧车 core-ui.exe 是独立进程，DLL 搜索只看自己目录）。
+        for dll in crt_dlls():
+            zf.write(dll, dll.name)
+            zf.write(dll, "plugins/core-ui/" + dll.name)
         # 内置插件
         for pid in BUILTIN_PLUGINS:
             src = run / "plugins" / pid
@@ -84,6 +101,10 @@ def build_iss(preset):
     # 收集要装的文件，用 Inno 的 [Files] 语法表达。
     files = []
     files.append(("ling.exe", str(exe)))
+    # VC++ 运行库：同 zip，根 + plugins/core-ui 两份。
+    for dll in crt_dlls():
+        files.append((dll.name, str(dll)))
+        files.append((f"plugins/core-ui/{dll.name}", str(dll)))
     for pid in BUILTIN_PLUGINS:
         src = run / "plugins" / pid
         if not src.exists():
@@ -125,10 +146,13 @@ def build_iss(preset):
     iss.write_text("\n".join(lines), encoding="utf-8")
     print(f"已生成 Inno Setup 脚本：{iss}")
 
-    iscc = pathlib.Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
-    if not iscc.exists():
-        iscc = pathlib.Path(r"C:\Program Files\Inno Setup 6\ISCC.exe")
-    if iscc.exists():
+    candidates = [
+        pathlib.Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+        pathlib.Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+        pathlib.Path(os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe")),
+    ]
+    iscc = next((c for c in candidates if c.exists()), None)
+    if iscc:
         subprocess.run([str(iscc), str(iss)], check=True)
         print("安装包编译完成。")
     else:
