@@ -17,6 +17,7 @@ add_library(ling_core STATIC
     src/kernel.cpp
     src/admin_server.cpp
     src/admin_client.cpp
+    src/ui_server.cpp
     src/log.cpp
 )
 
@@ -49,3 +50,18 @@ ling_set_standard(ling)
 ling_set_warnings(ling)
 ling_set_hardening(ling)
 ling_set_sanitizer(ling)
+
+# 界面进程（core-ui 的侧车产物）。
+#
+# 现在它以独立可执行文件的形式存在：宿主侧的侧车轨道要到 M4 才做，届时把这个产物
+# 装进插件目录、清单里加 [sidecar] 段即可，代码不用重写。
+# 页面还没定稿，现阶段只提供 HTTP、认证与 /api/* 转发，见
+# docs/ling/builtin-plugins/core-ui/02-服务端与接口.md。
+add_executable(ling-ui ui/main.cpp)
+
+target_link_libraries(ling-ui PRIVATE ling_core)
+
+ling_set_standard(ling-ui)
+ling_set_warnings(ling-ui)
+ling_set_hardening(ling-ui)
+ling_set_sanitizer(ling-ui)

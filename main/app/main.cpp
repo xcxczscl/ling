@@ -379,6 +379,8 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     std::signal(SIGTERM, on_posix_signal);
 #endif
     ling::Kernel kernel(args.data_dir);
+    // 界面进程还没起，这时 registry.json 里的 ui_port 一定是上一次留下的陈旧值。
+    kernel.clear_stale_ui_port();
     // 先预装内置插件，再统一装载（04/07 §8.3）。
     kernel.install_builtins(program_dir);
     const std::size_t failures = kernel.load_all();

@@ -84,6 +84,11 @@ public:
     // 管理端口启动后写进 registry.json，供命令行找端口。
     void note_admin_port(std::uint16_t port);
 
+    // 清掉 registry.json 里上一次留下的界面端口。
+    // 界面被强杀时来不及自己清理，宿主要在下一次启动时把陈旧值抹掉，
+    // 否则「界面地址」指向一个已经没人监听的端口。
+    void clear_stale_ui_port();
+
     // 广播 kernel.tick。宿主主循环每轮调一次，供需要按时间做事的插件使用。
     // 为什么用它而不是让插件起线程：见 docs/ling/04-详细设计/01-内核四服务.md §6.4。
     void publish_tick();

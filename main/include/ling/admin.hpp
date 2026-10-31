@@ -19,6 +19,7 @@ struct AdminReply {
         kAuth,        // 口令不对或没有口令文件（退出码 4）
         kRemote,      // 宿主返回了错误（退出码 4）
         kProtocol,    // 帧不合规、版本不匹配（退出码 4）
+        kTimeout,     // 宿主收下了请求但没在时限内应答（界面用它回 504）
     };
 
     Kind kind = Kind::kUnreachable;

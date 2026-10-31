@@ -2,6 +2,7 @@
 // 找不到宿主与认证失败要分开报，两者排查方向不同（04/06 §6.2）。
 #include "ling/admin.hpp"
 
+#include <cerrno>
 #include <cstddef>
 #include <fstream>
 #include <string>
@@ -57,13 +58,27 @@ bool send_all(socket_t fd, const std::string& data) {
     return true;
 }
 
-// 读到一行为止。返回空表示连接已断或超时。
-std::string read_line(socket_t fd) {
+// 读到一行为止。返回空表示连接已断或超时，两者用 timed_out 区分：
+// 「宿主忙到不应答」与「宿主断了」给使用者的下一步完全不同。
+std::string read_line(socket_t fd, bool* timed_out = nullptr) {
+    if (timed_out != nullptr) {
+        *timed_out = false;
+    }
     std::string buffer;
     char chunk[4096];
     for (;;) {
         const int received = ::recv(fd, chunk, sizeof(chunk), 0);
         if (received <= 0) {
+#ifdef _WIN32
+            const int code = ::WSAGetLastError();
+            if (timed_out != nullptr && (code == WSAETIMEDOUT || code == WSAEWOULDBLOCK)) {
+                *timed_out = true;
+            }
+#else
+            if (timed_out != nullptr && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                *timed_out = true;
+            }
+#endif
             return {};
         }
         buffer.append(chunk, static_cast<std::size_t>(received));
@@ -224,9 +239,15 @@ AdminReply call(const std::filesystem::path& data_root, const std::string& metho
         return reply;
     }
 
-    const std::string line = read_line(fd);
+    bool timed_out = false;
+    const std::string line = read_line(fd, &timed_out);
     close_socket(fd);
     if (line.empty()) {
+        if (timed_out) {
+            reply.kind = AdminReply::Kind::kTimeout;
+            reply.message = "宿主 " + std::to_string(timeout_ms / 1000) + " 秒内没有应答";
+            return reply;
+        }
         reply.kind = AdminReply::Kind::kProtocol;
         reply.message = "宿主在应答前断开";
         return reply;

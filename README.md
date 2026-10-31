@@ -32,7 +32,8 @@ ling 是一个插件宿主程序。它自己不实现任何业务功能，只提
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
 | ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
-| 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log` 三个 |
+| 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job` 四个 |
+| 界面（`main/ui/`） | 已定稿（`builtin-plugins/core-ui/`） | `ling-ui`：服务端与接口可用，页面还是一个占位页 |
 | 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench` |
 
 MVP 能跑通的最短路径：
@@ -41,7 +42,7 @@ MVP 能跑通的最短路径：
 ling serve                          # 前台起宿主，管理端口 127.0.0.1:7900
 ling install <目录>/plugins/demo-a
 ling install <目录>/plugins/demo-caller
-ling plugins                        # 五个 activated（三个内置加两个示例）
+ling plugins                        # 六个 activated（四个内置加两个示例）
 ling logs demo-caller               # 看到 event demo-a.pinged pong 与 reply=pong
 ling shutdown
 ```
@@ -50,7 +51,10 @@ ling shutdown
 
 ```bash
 python tests/acceptance/acceptance.py --script all --preset win-release
+python tests/acceptance/ui_smoke.py --preset win-release    # 界面服务端
 ```
+
+想先看看界面服务端：另开一个窗口跑 `run/<preset>/ling-ui.exe --data-dir <数据目录>`，它会打印实际端口（`{"ready":true,"port":8010}`）。页面还没做，只有一个能点「读一次插件列表」的占位页；十三类接口都已可用。
 
 技术栈（见 [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，首版 core-ui 用 C++ 写成独立可执行文件。
 

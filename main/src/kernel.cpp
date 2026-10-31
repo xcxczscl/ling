@@ -282,12 +282,42 @@ void Kernel::save_registry() const {
     }
 
     const auto path = data_root_ / "registry.json";
+    // ui_port 由界面进程写进来，内核只转发不持有。重写时先读回旧值，否则每次
+    // 插件状态变化都会把这个字段抹掉，界面地址就找不到了。
+    {
+        std::ifstream existing(path);
+        if (existing) {
+            const auto previous = nlohmann::json::parse(existing, nullptr, false);
+            if (!previous.is_discarded() && previous.contains("ui_port")) {
+                document["ui_port"] = previous["ui_port"];
+            }
+        }
+    }
+
     std::ofstream output(path, std::ios::trunc);
     if (!output) {
         log_error("registry", "无法写入 " + path.string());
         return;
     }
     output << document.dump(2) << "\n";
+}
+
+void Kernel::clear_stale_ui_port() {
+    const auto path = data_root_ / "registry.json";
+    std::ifstream input(path);
+    if (!input) {
+        return;
+    }
+    auto document = nlohmann::json::parse(input, nullptr, false);
+    input.close();
+    if (document.is_discarded() || !document.is_object() || !document.contains("ui_port")) {
+        return;
+    }
+    document.erase("ui_port");
+    std::ofstream output(path, std::ios::trunc);
+    if (output) {
+        output << document.dump(2) << "\n";
+    }
 }
 
 void Kernel::note_admin_port(std::uint16_t port) {
@@ -570,6 +600,19 @@ nlohmann::json tail_lines(const std::filesystem::path& path, std::size_t limit) 
     return lines;
 }
 
+// 管理端口经 kernel.call 能代理的插件方法。按前缀放开，只覆盖「管理动作」这一类：
+// 配置读写、定时任务、插件管理器的只读查询。业务插件的方法一律不放。
+bool admin_proxyable(const std::string& method) {
+    static const char* const kPrefixes[] = {"core-settings.", "core-job.",
+                                            "core-plugin-manager."};
+    for (const char* prefix : kPrefixes) {
+        if (method.rfind(prefix, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 内核方法返回的字符串形如 "E_XXX 说明"，拆成错误码与说明两段。
 void fill_error(Kernel::KernelReply& reply, const std::string& text) {
     const auto space = text.find(' ');
@@ -624,6 +667,39 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         }
         return std::string();
     };
+
+    // kernel.call：管理端口的受限代理。
+    //
+    // 为什么需要它：配置与定时任务的方法是插件方法（core-settings.write、core-job.schedule），
+    // 而管理端口只放行 kernel.*，于是界面与命令行都改不了配置、建不了任务。
+    // 放开的范围按前缀白名单收窄，只给「管理动作」这一类的内置插件开，业务插件不受影响。
+    // 完整说明见 docs/ling/04-详细设计/06-管理端口与命令行.md 3.5。
+    if (method == "kernel.call") {
+        const std::string inner = string_arg("method");
+        if (!admin_proxyable(inner)) {
+            reply.code = err::kNamespaceViolation;
+            reply.message = "管理端口不能调用 " + inner;
+            return reply;
+        }
+        std::string payload = "{}";
+        if (args.contains("args")) {
+            if (!args["args"].is_object()) {
+                reply.code = err::kProtocol;
+                reply.message = "args.args 必须是对象";
+                return reply;
+            }
+            payload = args["args"].dump();
+        }
+        const CallOutcome outcome =
+            call(inner, reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+        if (!outcome.ok()) {
+            reply.code = outcome.code;
+            reply.message = "调用 " + inner + " 失败";
+            return reply;
+        }
+        reply.result = std::string(outcome.data.begin(), outcome.data.end());
+        return reply;
+    }
 
     if (method == "kernel.plugins") {
         nlohmann::json list = nlohmann::json::array();
