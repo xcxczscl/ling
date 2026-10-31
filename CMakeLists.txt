@@ -5,8 +5,8 @@ cmake_minimum_required(VERSION 3.25)
 # bN 是打包轮次，每次构建产物递增；功能变化才动次版本。
 # 0.0.3 对应 M2（可装可卸），也就是 MVP 的交付版本（11-MVP 范围.md §1.1）。
 set(LING_VERSION_MAJOR 0)
-set(LING_VERSION_MINOR 0)
-set(LING_VERSION_PATCH 6)
+set(LING_VERSION_MINOR 1)
+set(LING_VERSION_PATCH 0)
 set(LING_BUILD 1)
 set(LING_VERSION
     "${LING_VERSION_MAJOR}.${LING_VERSION_MINOR}.${LING_VERSION_PATCH}-b${LING_BUILD}")

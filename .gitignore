@@ -33,3 +33,5 @@ other/
 run/
 .vcpkg/
 third_party/webview2.nupkg
+third_party/python-embed.zip
+dist/

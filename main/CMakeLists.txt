@@ -112,3 +112,13 @@ add_custom_target(copy-python-sdk ALL
             "${CMAKE_CURRENT_SOURCE_DIR}/python"
             "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/python"
     COMMENT "复制 Python 侧车 SDK")
+
+# Python 嵌入运行时随宿主分发：宿主按 <程序目录>/runtime/python/python.exe 找它，
+# Python 插件因此脱离系统环境（M6）。目前只打包 Windows x64。
+if(WIN32)
+    add_custom_target(copy-python-runtime ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/third_party/python-embed"
+                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/runtime/python"
+        COMMENT "复制 Python 嵌入运行时")
+endif()
