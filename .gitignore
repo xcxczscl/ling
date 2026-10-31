@@ -32,3 +32,4 @@ other/
 # 构建产物与本地依赖
 run/
 .vcpkg/
+third_party/webview2.nupkg

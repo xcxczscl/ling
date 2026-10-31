@@ -19,6 +19,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 namespace {
@@ -116,6 +117,7 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "命令：\n");
     std::fprintf(out, "  serve                启动 ling，前台运行（保持这个窗口开着）\n");
     std::fprintf(out, "  plugins              列出已安装的插件\n");
+    std::fprintf(out, "  open                 用浏览器打开本机界面\n");
     std::fprintf(out, "  install <插件目录>   安装一个插件，装完立即可用\n");
     std::fprintf(out, "  uninstall <插件名>   卸载插件，它的数据默认保留\n");
     std::fprintf(out, "  enable <插件名>      启用插件\n");
@@ -452,6 +454,21 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 // Windows 把命令行参数按「系统当前代码页」交给程序（中文系统是 936）。
 // 程序内部一律 UTF-8，所以入口处转一次：不转的话，带中文的插件目录与
 // `--args '{"message":"到点了"}'` 到这里就已经是坏字节了。
+// UTF-8 → 宽字符，给 Windows API 用（打开浏览器）。
+std::wstring to_wide(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int wide_len = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (wide_len <= 1) {
+        return {};
+    }
+    std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), wide_len);
+    wide.resize(static_cast<std::size_t>(wide_len - 1));
+    return wide;
+}
+
 std::string from_ansi(const char* text) {
     if (text == nullptr || *text == '\0') {
         return {};
@@ -477,6 +494,43 @@ std::string from_ansi(const char* text) {
 
 // `ling job` 的三种动作。任务定义存在 core-settings 里，由 core-job 解释；
 // 这三条命令只是把参数整理成一次 kernel.call（04/06 §4.5、§5.7）。
+// 用浏览器打开本机界面：读端口与口令，拼好地址交给默认浏览器。
+// 口令只存在于本机，命令自己把它带进地址，用户不用手动复制。
+int run_open(const Args& args) {
+    const auto registry = args.data_dir / "registry.json";
+    const auto session = args.data_dir / "session.json";
+
+    std::ifstream reg_in(registry);
+    const auto reg = nlohmann::json::parse(reg_in, nullptr, false);
+    std::ifstream ses_in(session);
+    const auto ses = nlohmann::json::parse(ses_in, nullptr, false);
+
+    if (reg.is_discarded() || !reg.contains("ui_port") || ses.is_discarded() ||
+        !ses.contains("token")) {
+        std::fprintf(stderr, "界面没在运行。先开一个窗口跑 ling serve，再用 ling open。\n");
+        return 3;
+    }
+    const std::string url = "http://127.0.0.1:" + std::to_string(reg["ui_port"].get<int>()) +
+                            "/?token=" + ses["token"].get<std::string>();
+#ifdef _WIN32
+    const auto result = reinterpret_cast<std::intptr_t>(
+        ::ShellExecuteW(nullptr, L"open", to_wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (result <= 32) {
+        std::fprintf(stderr, "没能打开浏览器（错误码 %lld）。手动打开：%s\n",
+                     static_cast<long long>(result), url.c_str());
+        return 3;
+    }
+#else
+    const std::string command = "xdg-open '" + url + "' >/dev/null 2>&1";
+    if (std::system(command.c_str()) != 0) {
+        std::fprintf(stderr, "没能打开浏览器。手动打开：%s\n", url.c_str());
+        return 3;
+    }
+#endif
+    std::printf("已在浏览器打开界面。\n");
+    return 0;
+}
+
 int run_job(const Args& args) {
     const auto print_job_usage = [](std::FILE* out) {
         std::fprintf(out, "ling job 用来管定时任务。任务存在配置里，重启宿主也不丢。\n\n");
@@ -699,6 +753,9 @@ int main(int argc, char** argv) {
 #endif
         const auto program_dir = std::filesystem::absolute(self_path, ec).parent_path();
         return run_serve(args, ec ? std::filesystem::current_path() : program_dir);
+    }
+    if (args.command == "open") {
+        return run_open(args);
     }
     if (args.command == "logs" && args.positional.empty()) {
         return print_kernel_logs(args.data_dir);

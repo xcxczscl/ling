@@ -20,6 +20,9 @@ public:
     struct Options {
         std::filesystem::path data_root;
         std::string token;                  // 与 session.json 里的口令相同
+        // 关掉口令校验时，浏览器直接打开就能用，不用带 token。
+        // 只绑 127.0.0.1，关掉等于「本机所有用户都能用」，单用户机器可选。
+        bool require_auth = true;
         std::uint16_t start_port = 8010;    // 占用则顺延，最多到 last_port
         std::uint16_t last_port = 8099;
     };
@@ -34,6 +37,9 @@ public:
     std::string start(const Options& options);
 
     std::uint16_t port() const;
+
+    // 运行中切换要不要口令。用户改设置后由调用方（core-ui）读出来同步过来。
+    void set_require_auth(bool value);
 
     // 处理一轮事件，最多等 timeout_ms。
     void poll(int timeout_ms);

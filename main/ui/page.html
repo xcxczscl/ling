@@ -450,13 +450,30 @@ async function renderJobs() {
 
 async function renderSettings() {
   let closeBehavior = "keep-host";
+  let authMode = "on";
   try {
     const value = await api("config.get", { key: "core-ui.close_behavior" });
     if (value.found && typeof value.value === "string") closeBehavior = value.value;
   } catch { /* 没存过就用默认值 */ }
+  try {
+    const auth = await api("config.get", { key: "core-ui.auth" });
+    if (auth.found && typeof auth.value === "string") authMode = auth.value;
+  } catch { /* 没存过就用默认值 */ }
 
   content.innerHTML = `
     <h2>设置</h2>
+    <div class="card">
+      <h2>访问口令</h2>
+      <label style="display:block;padding:4px 0">
+        <input type="radio" name="auth" value="on" ${authMode !== "off" ? "checked" : ""}>
+        要求口令（默认）：打开界面要带 token，同机器的其他人进不来
+      </label>
+      <label style="display:block;padding:4px 0">
+        <input type="radio" name="auth" value="off" ${authMode === "off" ? "checked" : ""}>
+        不要求口令：直接打开 http://127.0.0.1:8010 就能用，适合只有你一个人的机器
+      </label>
+      <div class="muted">改动约两秒生效，不需要重启。</div>
+    </div>
     <div class="card">
       <h2>关闭窗口时</h2>
       <label style="display:block;padding:4px 0">
@@ -477,6 +494,14 @@ async function renderSettings() {
       <button class="danger" id="shutdownBtn">退出 ling</button>
       <div class="muted">停掉宿主和所有插件，不只是关这个页面。</div>
     </div>`;
+
+  content.querySelectorAll('input[name="auth"]').forEach((input) => {
+    input.onchange = async () => {
+      const result = await run("config.set",
+        { key: "core-ui.auth", value: input.value }, "已保存，约两秒生效");
+      if (!result) toast("保存失败", true);
+    };
+  });
 
   content.querySelectorAll('input[name="close"]').forEach((input) => {
     input.onchange = async () => {

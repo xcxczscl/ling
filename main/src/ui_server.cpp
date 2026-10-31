@@ -231,7 +231,7 @@ std::pair<int, std::string> UiServer::Impl::handle_request(const Request& reques
     if (request.path == "/" || request.path == "/index.html") {
         const std::string given = request.bearer.empty() ? query_value(request.query, "token")
                                                          : request.bearer;
-        if (!token_equal(given, token)) {
+        if (options.require_auth && !token_equal(given, token)) {
             return {401, "口令不对或没有口令。请从 ling 主程序打开界面。"};
         }
         return {200, std::string(page_html())};
@@ -243,7 +243,7 @@ std::pair<int, std::string> UiServer::Impl::handle_request(const Request& reques
     if (request.method != "POST") {
         return {405, error_body(err::kProtocol, "接口只接受 POST").dump()};
     }
-    if (!token_equal(request.bearer, token)) {
+    if (options.require_auth && !token_equal(request.bearer, token)) {
         // 401 单独给，页面据此提示「口令已变，请重新从主程序打开」。
         return {401, error_body(err::kAuth, "口令不对或已过期").dump()};
     }
@@ -569,6 +569,10 @@ void UiServer::poll(int timeout_ms) {
         }
         ++i;
     }
+}
+
+void UiServer::set_require_auth(bool value) {
+    impl_->options.require_auth = value;
 }
 
 void UiServer::stop() {
