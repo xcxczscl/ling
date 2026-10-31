@@ -404,6 +404,20 @@ int32_t on_schedule(void*, const uint8_t* args, size_t len, uint8_t** out, size_
     return reply_json({{"name", name}, {"key", std::string(kPrefix) + name}}, out, out_len);
 }
 
+// 只校验时间表，不落盘。存在的理由：插件的错误码只有数字，加载失败时调用方
+// 拿不到「哪一段超范围」这种细节；把校验单独做成一个返回正文的方法，命令行与界面
+// 就能在用户填表时当场给出原因，而不是等保存失败后去翻日志。
+int32_t on_validate(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
+    const auto parsed = parse_args(args, len);
+    const std::string cron_text = parsed.value("cron", "");
+    Cron cron;
+    std::string error;
+    if (!parse_cron(cron_text, &cron, &error)) {
+        return reply_json({{"ok", false}, {"reason", error}}, out, out_len);
+    }
+    return reply_json({{"ok", true}, {"cron", cron_text}}, out, out_len);
+}
+
 int32_t on_cancel(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
     const std::string name = parsed.value("name", "");
@@ -530,6 +544,7 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
         int32_t (*fn)(void*, const uint8_t*, size_t, uint8_t**, size_t*);
     } methods[] = {
         {"core-job.schedule", &on_schedule},
+        {"core-job.validate", &on_validate},
         {"core-job.cancel", &on_cancel},
         {"core-job.list", &on_list},
     };

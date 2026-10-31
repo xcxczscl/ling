@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ling/admin.hpp"
+#include "ling/errors.hpp"
 #include "ling/kernel.hpp"
 #include "ling/version.hpp"
 
@@ -120,6 +121,9 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  enable <插件名>      启用插件\n");
     std::fprintf(out, "  disable <插件名>     停用插件，数据保留，随时能再启用\n");
     std::fprintf(out, "  logs [插件名]        查看日志；不给插件名时看 ling 自己的日志\n");
+    std::fprintf(out, "  job list             列出定时任务\n");
+    std::fprintf(out, "  job add <任务名>     建一条定时任务，要配 --cron 与 --call\n");
+    std::fprintf(out, "  job remove <任务名>  删掉一条定时任务\n");
     std::fprintf(out, "  shutdown             停止正在运行的 ling\n\n");
     std::fprintf(out, "选项：\n");
     std::fprintf(out, "  --purge              卸载时连插件的数据一起删除\n");
@@ -181,6 +185,12 @@ struct Args {
     bool purge = false;
     bool json = false;
     std::uint16_t port = 7900;
+
+    // ling job add 用到的三项，其余子命令不读。
+    std::string cron;
+    std::string call_method;
+    std::string call_args;
+    bool catch_up = false;
 };
 
 // 打印内核日志末 40 行。这条路径不依赖任何插件（LING-REQ-077、LING-REQ-119）。
@@ -421,6 +431,166 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 
 }  // namespace
 
+#ifdef _WIN32
+// Windows 把命令行参数按「系统当前代码页」交给程序（中文系统是 936）。
+// 程序内部一律 UTF-8，所以入口处转一次：不转的话，带中文的插件目录与
+// `--args '{"message":"到点了"}'` 到这里就已经是坏字节了。
+std::string from_ansi(const char* text) {
+    if (text == nullptr || *text == '\0') {
+        return {};
+    }
+    const int wide_len = ::MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
+    if (wide_len <= 1) {
+        return std::string(text);
+    }
+    std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
+    ::MultiByteToWideChar(CP_ACP, 0, text, -1, wide.data(), wide_len);
+
+    const int utf8_len =
+        ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8_len <= 1) {
+        return {};
+    }
+    std::string utf8(static_cast<std::size_t>(utf8_len), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), utf8_len, nullptr, nullptr);
+    utf8.resize(static_cast<std::size_t>(utf8_len - 1));
+    return utf8;
+}
+#endif
+
+// `ling job` 的三种动作。任务定义存在 core-settings 里，由 core-job 解释；
+// 这三条命令只是把参数整理成一次 kernel.call（04/06 §4.5、§5.7）。
+int run_job(const Args& args) {
+    const auto print_job_usage = [](std::FILE* out) {
+        std::fprintf(out, "ling job 用来管定时任务。任务存在配置里，重启宿主也不丢。\n\n");
+        std::fprintf(out, "  ling job list                     列出所有任务\n");
+        std::fprintf(out, "  ling job add <任务名> --cron \"<时间表>\" --call <插件方法> [--args <JSON>] [--catch-up]\n");
+        std::fprintf(out, "  ling job remove <任务名>          删掉一个任务\n\n");
+        std::fprintf(out, "时间表是五段：分 时 日 月 周，最短一分钟。例：\"0 3 * * *\" 是每天 03:00，\"*/10 * * * *\" 是每 10 分钟。\n");
+        std::fprintf(out, "插件方法写成「插件名.方法名」，例如 core-log.write。\n");
+        std::fprintf(out, "--args 是传给那个方法的参数，JSON 对象，例如 '{\"plugin\":\"core-job\",\"message\":\"到点了\"}'。\n");
+        std::fprintf(out, "--catch-up 表示宿主停机期间错过的那一次，启动后补跑。\n");
+    };
+
+    if (args.positional.empty()) {
+        print_job_usage(stderr);
+        return 2;
+    }
+
+    const std::string action = args.positional[0];
+    std::string inner_method;
+    nlohmann::json inner_args = nlohmann::json::object();
+
+    if (action == "list") {
+        inner_method = "core-job.list";
+    } else if (action == "remove" || action == "rm") {
+        if (args.positional.size() != 2) {
+            std::fprintf(stderr, "要删哪个任务？写成：ling job remove <任务名>\n");
+            std::fprintf(stderr, "任务名用 ling job list 看。\n");
+            return 2;
+        }
+        inner_method = "core-job.cancel";
+        inner_args["name"] = args.positional[1];
+    } else if (action == "add") {
+        if (args.positional.size() != 2) {
+            std::fprintf(stderr, "要建哪条任务？写成：ling job add <任务名> --cron ... --call ...\n");
+            return 2;
+        }
+        if (args.cron.empty()) {
+            std::fprintf(stderr, "缺 --cron。时间表是五段：分 时 日 月 周，例如 --cron \"0 3 * * *\" 表示每天 03:00。\n");
+            return 2;
+        }
+        if (args.call_method.empty()) {
+            std::fprintf(stderr, "缺 --call。要说明到点调哪个插件的方法，例如 --call core-log.write。\n");
+            return 2;
+        }
+        // 先让 core-job 自己校验一遍时间表。它的错误码只有数字，只有这个接口
+        // 能把「「时」段取值 25 超出范围 0 至 23」这种原因原样带回来。
+        const nlohmann::json probe_args = {{"method", "core-job.validate"},
+                                           {"args", {{"cron", args.cron}}}};
+        const ling::AdminReply probe = ling::admin::call(args.data_dir, "kernel.call",
+                                                         probe_args.dump(), 30000);
+        if (!probe.ok()) {
+            print_failure(probe);
+            return exit_code_of(probe);
+        }
+        const auto checked = nlohmann::json::parse(probe.result, nullptr, false);
+        if (!checked.is_discarded() && checked.contains("ok") && !checked.value("ok", false)) {
+            std::fprintf(stderr, "时间表写错了：%s\n", checked.value("reason", "").c_str());
+            std::fprintf(stderr, "格式是五段：分 时 日 月 周。例：\"0 3 * * *\" 每天 03:00，"
+                                 "\"*/10 * * * *\" 每 10 分钟。\n");
+            return 2;
+        }
+
+        inner_method = "core-job.schedule";
+        inner_args["name"] = args.positional[1];
+        inner_args["cron"] = args.cron;
+        inner_args["method"] = args.call_method;
+        if (!args.call_args.empty()) {
+            const auto parsed = nlohmann::json::parse(args.call_args, nullptr, false);
+            if (parsed.is_discarded() || !parsed.is_object()) {
+                std::fprintf(stderr, "--args 只收 JSON 对象，例如 '{\"message\":\"hi\"}'。\n");
+                return 2;
+            }
+            inner_args["args"] = parsed;
+        }
+        if (args.catch_up) {
+            inner_args["catch_up"] = true;
+        }
+    } else {
+        std::fprintf(stderr, "job 后面只能是 list、add、remove，不认识：%s\n\n", action.c_str());
+        print_job_usage(stderr);
+        return 2;
+    }
+
+    const nlohmann::json payload = {{"method", inner_method}, {"args", inner_args}};
+    const ling::AdminReply reply = ling::admin::call(args.data_dir, "kernel.call",
+                                                     payload.dump(), 30000);
+    if (!reply.ok()) {
+        print_failure(reply);
+        if (reply.code == ling::err::kPluginMissing) {
+            std::fprintf(stderr, "提示：定时任务要靠 core-job 这个内置插件，用 ling plugins 看它在不在。\n");
+        }
+        return exit_code_of(reply);
+    }
+
+    if (args.json) {
+        std::printf("%s\n", reply.result.c_str());
+        return 0;
+    }
+
+    if (action == "list") {
+        const auto document = nlohmann::json::parse(reply.result, nullptr, false);
+        if (document.is_discarded() || !document.contains("jobs") || document["jobs"].empty()) {
+            std::printf("现在没有定时任务。\n");
+            std::printf("要建一条：ling job add 每天备份 --cron \"0 3 * * *\" --call core-log.write\n");
+            return 0;
+        }
+        std::printf("%-20s %-16s %-24s %s\n", "任务名", "时间表", "到点调用", "上次触发");
+        for (const auto& job : document["jobs"]) {
+            std::string last = job.contains("last_fired") ? job.value("last_fired", "") : "";
+            if (last.empty()) {
+                last = "还没跑过";
+            }
+            std::printf("%-20s %-16s %-24s %s\n", job.value("name", "").c_str(),
+                        job.value("cron", "").c_str(), job.value("method", "").c_str(),
+                        last.c_str());
+        }
+        return 0;
+    }
+
+    if (action == "add") {
+        std::printf("已建任务 %s：%s 调用 %s。\n", args.positional[1].c_str(), args.cron.c_str(),
+                    args.call_method.c_str());
+        std::printf("想确认：ling job list。想删掉：ling job remove %s。\n",
+                    args.positional[1].c_str());
+        return 0;
+    }
+
+    std::printf("已删任务 %s。\n", args.positional[1].c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     // 必须放在任何输出之前：Kernel 构造时就会往 stderr 打日志。
@@ -429,8 +599,19 @@ int main(int argc, char** argv) {
     Args args;
     args.data_dir = default_data_root();
 
+    std::vector<std::string> raw_args;
+    raw_args.reserve(static_cast<std::size_t>(argc > 0 ? argc - 1 : 0));
     for (int i = 1; i < argc; ++i) {
-        const std::string token = argv[i];
+#ifdef _WIN32
+        raw_args.push_back(from_ansi(argv[i]));
+#else
+        raw_args.push_back(argv[i]);
+#endif
+    }
+    const int arg_count = static_cast<int>(raw_args.size());
+
+    for (int i = 0; i < arg_count; ++i) {
+        const std::string& token = raw_args[i];
         if (token == "--version") {
             std::printf("ling %s\n", ling::version_string());
             return 0;
@@ -439,12 +620,12 @@ int main(int argc, char** argv) {
             print_usage(stdout);
             return 0;
         }
-        if (token == "--data-dir" && i + 1 < argc) {
-            args.data_dir = argv[++i];
+        if (token == "--data-dir" && i + 1 < arg_count) {
+            args.data_dir = raw_args[++i];
             continue;
         }
-        if (token == "--port" && i + 1 < argc) {
-            args.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
+        if (token == "--port" && i + 1 < arg_count) {
+            args.port = static_cast<std::uint16_t>(std::atoi(raw_args[++i].c_str()));
             continue;
         }
         if (token == "--purge") {
@@ -453,6 +634,22 @@ int main(int argc, char** argv) {
         }
         if (token == "--json") {
             args.json = true;
+            continue;
+        }
+        if (token == "--cron" && i + 1 < arg_count) {
+            args.cron = raw_args[++i];
+            continue;
+        }
+        if (token == "--call" && i + 1 < arg_count) {
+            args.call_method = raw_args[++i];
+            continue;
+        }
+        if (token == "--args" && i + 1 < arg_count) {
+            args.call_args = raw_args[++i];
+            continue;
+        }
+        if (token == "--catch-up") {
+            args.catch_up = true;
             continue;
         }
         if (args.command.empty()) {
@@ -470,12 +667,20 @@ int main(int argc, char** argv) {
     if (args.command == "serve") {
         // 内置插件的产物在 <程序目录>/plugins/ 下，serve 用这个位置做首次预装。
         std::error_code ec;
-        const auto program_dir =
-            std::filesystem::absolute(std::filesystem::path(argv[0]), ec).parent_path();
+#ifdef _WIN32
+        const auto self_path = std::filesystem::u8path(from_ansi(argc > 0 ? argv[0] : ""));
+#else
+        const auto self_path = std::filesystem::path(argc > 0 ? argv[0] : "");
+#endif
+        const auto program_dir = std::filesystem::absolute(self_path, ec).parent_path();
         return run_serve(args, ec ? std::filesystem::current_path() : program_dir);
     }
     if (args.command == "logs" && args.positional.empty()) {
         return print_kernel_logs(args.data_dir);
+    }
+
+    if (args.command == "job") {
+        return run_job(args);
     }
 
     // 其余子命令都经管理端口。方法名与子命令的对应见 04/06 §4.1。
