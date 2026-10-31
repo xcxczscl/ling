@@ -918,6 +918,11 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         if (!outcome.ok()) {
             reply.code = outcome.code;
             reply.message = "调用 " + inner + " 失败";
+            if (!outcome.detail.empty()) {
+                reply.message += "：" + outcome.detail;
+            } else if (!outcome.code.empty()) {
+                reply.message += "（" + outcome.code + "）";
+            }
             return reply;
         }
         reply.result = std::string(outcome.data.begin(), outcome.data.end());
@@ -1103,7 +1108,21 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         }
         // 停用一个插件，依赖它的要跟着停；启用同理，依赖它的可能因此能起来。
         reconcile();
-        reply.result = "{\"id\":\"" + id + "\"}";
+
+        // 回真实状态：启用一个依赖没满足的插件，调和会把它再停下。
+        // 只说「已启用」会让用户以为在跑，然后在调它的时候撞上 E_PLUGIN_MISSING。
+        nlohmann::json result;
+        result["id"] = id;
+        const LoadedPlugin* plugin = find(id);
+        const bool activated = plugin != nullptr && plugin->state == PluginState::kActivated;
+        result["state"] = activated ? "activated" : "deactivated";
+        if (!activated) {
+            const auto blocked = blocked_.find(id);
+            if (blocked != blocked_.end()) {
+                result["reason"] = blocked->second;
+            }
+        }
+        reply.result = result.dump();
         return reply;
     }
 
@@ -1480,6 +1499,18 @@ void Kernel::publish_state(const LoadedPlugin& plugin, const char* state,
 CallOutcome Kernel::call(const std::string& method, const std::uint8_t* args,
                          std::size_t len) {
     CallOutcome outcome = router_.call(method, args, len);
+    if (!outcome.ok()) {
+        // 装着但没在跑（依赖不满足、被停用），原因写在 blocked_ 里。
+        // 只回「方法不存在」会让调用方以为插件没装，白查半天。
+        const auto dot = method.find('.');
+        if (dot != std::string::npos) {
+            const auto blocked = blocked_.find(method.substr(0, dot));
+            if (blocked != blocked_.end()) {
+                outcome.code = err::kPluginMissing;
+                outcome.detail = "插件现在没在跑：" + blocked->second;
+            }
+        }
+    }
     if (outcome.code == err::kMethodMissing) {
         // 二次查表只在失败路径：方法差一段，说明插件在但方法没注册。
         const auto dot = method.find('.');

@@ -20,6 +20,9 @@ struct RouteEntry {
 struct CallOutcome {
     std::string code;            // 空表示成功
     std::vector<std::uint8_t> data;
+    // 补充说明，通常是「为什么没跑起来」。只在给人看的路径上用，
+    // 插件之间的调用只认 code。
+    std::string detail;
     bool ok() const { return code.empty(); }
 };
 

@@ -346,14 +346,16 @@ void print_failure(const ling::AdminReply& reply) {
         return;
     }
 
-    // 屏幕上只说人话，不贴错误码：错误码是给脚本与日志看的，人看到 E_XXX 只会更糊涂。
+    // 一条错误要把三样都给全：人话、错误码、下一步。
+    // 少了错误码，贴给别人时没法对号；少了下一步，用户只知道「失败了」。
     const std::string detail = strip_code(reply.message, reply.code);
+    const std::string code_text = reply.code.empty() ? std::string() : "（" + reply.code + "）";
     const ErrorHint* hint = find_hint(reply.code);
     if (hint != nullptr) {
         if (detail.empty()) {
-            std::fprintf(stderr, "%s。\n", hint->plain);
+            std::fprintf(stderr, "%s%s\n", hint->plain, code_text.c_str());
         } else {
-            std::fprintf(stderr, "%s：%s\n", hint->plain, detail.c_str());
+            std::fprintf(stderr, "%s：%s%s\n", hint->plain, detail.c_str(), code_text.c_str());
         }
         if (hint->advice[0] != '\0') {
             std::fprintf(stderr, "提示：%s。\n", hint->advice);
@@ -361,8 +363,8 @@ void print_failure(const ling::AdminReply& reply) {
         return;
     }
 
-    std::fprintf(stderr, "%s\n",
-                 detail.empty() ? "这一步没成功，原因不明；换 ling --json 看详细信息" : detail.c_str());
+    std::fprintf(stderr, "%s%s\n",
+                 detail.empty() ? "这一步没成功，原因不明" : detail.c_str(), code_text.c_str());
 }
 
 int exit_code_of(const ling::AdminReply& reply) {
@@ -878,7 +880,17 @@ int main(int argc, char** argv) {
             }
         }
     } else if (args.command == "enable") {
-        std::printf("已启用 %s。\n", plugin_id.c_str());
+        if (field("state") == "activated") {
+            std::printf("已启用 %s。\n", plugin_id.c_str());
+        } else {
+            // 启用了但没跑起来：多半是依赖没满足，调和又把它停下了。
+            std::printf("已启用 %s，但它现在没能跑起来。\n", plugin_id.c_str());
+            const std::string reason = field("reason");
+            if (!reason.empty()) {
+                std::printf("  原因：%s\n", reason.c_str());
+                std::printf("  把缺的装上，它会自动起来。\n");
+            }
+        }
     } else if (args.command == "disable") {
         std::printf("已停用 %s，数据还在，随时能再启用。\n", plugin_id.c_str());
     } else {
