@@ -17,6 +17,8 @@ if(WIN32)
     target_link_libraries(ling_sys PUBLIC ws2_32)  # Winsock 初始化（WSAStartup）在 sys.cpp
 else()
     target_sources(ling_sys PRIVATE Sys/Posix/sys.cpp)
+    # dlopen/dlsym/dlclose 在较老的 glibc（< 2.34）上要显式链 -ldl。
+    target_link_libraries(ling_sys PUBLIC ${CMAKE_DL_LIBS})
 endif()
 target_include_directories(ling_sys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 ling_set_standard(ling_sys)
@@ -93,12 +95,20 @@ set(CORE_UI_SOURCES builtin-plugins/core-ui/app.cpp builtin-plugins/core-ui/page
 if(LING_CORE_UI_DESKTOP AND WIN32)
     list(APPEND CORE_UI_SOURCES builtin-plugins/core-ui/win_main.cpp)
     add_executable(core-ui ${CORE_UI_SOURCES})
-    # WebView2.h 与 WRL 的 Callback 需要 Windows SDK 的 winrt 目录。
-    # 手设 INCLUDE 环境变量（本项目一直是这么构建的）不含它，这里补上。
+    # WebView2.h 与 WRL 的 Callback 需要 Windows SDK 的 winrt 头；手设 INCLUDE 环境变量
+    # 不含它。版本号随 SDK 升级变化，用 glob 找最新版而不是硬编码，避免换 SDK 就断。
+    file(GLOB WINDOWS_SDK_WINRT_DIRS
+        "C:/Program Files (x86)/Windows Kits/10/Include/*/winrt")
+    list(SORT WINDOWS_SDK_WINRT_DIRS)
+    if(WINDOWS_SDK_WINRT_DIRS)
+        list(GET WINDOWS_SDK_WINRT_DIRS -1 WINDOWS_SDK_WINRT_DIR)
+    else()
+        message(FATAL_ERROR "找不到 Windows SDK 的 winrt 头目录（WebView2 需要），请装 Windows SDK")
+    endif()
     target_include_directories(core-ui PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}"
         "${CMAKE_SOURCE_DIR}/third_party/webview2/build/native/include"
-        "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/winrt")
+        "${WINDOWS_SDK_WINRT_DIR}")
     target_link_libraries(core-ui PRIVATE ling_core
         "${CMAKE_SOURCE_DIR}/third_party/webview2/build/native/x64/WebView2LoaderStatic.lib"
         user32 ole32 shlwapi version)

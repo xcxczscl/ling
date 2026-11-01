@@ -19,23 +19,6 @@
 namespace ling {
 namespace {
 
-std::filesystem::path default_data_root() {
-    // 与宿主一致：exe 同目录有 ling.portable 时数据存 <程序目录>/data。
-    const auto exe_dir = sys::executable_dir();
-    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
-        return exe_dir / "data";
-    }
-    const std::string appdata = sys::read_env("APPDATA");
-    if (!appdata.empty()) {
-        return std::filesystem::path(appdata) / "ling";
-    }
-    const std::string home = sys::read_env("HOME");
-    if (!home.empty()) {
-        return std::filesystem::path(home) / ".local" / "share" / "ling";
-    }
-    return std::filesystem::current_path() / "ling-data";
-}
-
 // 侧车的 LING_DATA_DIR 是「自己的数据目录」（<数据根>/plugins/core-ui/data），
 // 而界面要连宿主的管理端口，那里需要数据根。回退三级。
 std::filesystem::path data_root_from_sidecar(const std::string& data_dir) {
@@ -148,7 +131,7 @@ struct Args {
 
 Args parse_args(int argc, char** argv) {
     Args args;
-    args.data_dir = default_data_root();
+    args.data_dir = sys::default_data_root();
     for (int i = 1; i < argc; ++i) {
         const std::string token = argv[i];
         if (token == "--help" || token == "-h") {
@@ -236,7 +219,9 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
     options.data_root = data_root;
     options.token = token;
     options.start_port = args.port;
-    options.last_port = static_cast<std::uint16_t>(args.port + 89);
+    // 端口是 uint16_t，加偏移可能越过 65535 回绕；先算成 int 再夹到上限。
+    const int last_raw = static_cast<int>(args.port) + 89;
+    options.last_port = static_cast<std::uint16_t>(last_raw > 65535 ? 65535 : last_raw);
     const std::string error = app->server->start(options);
     if (!error.empty()) {
         std::fprintf(stderr, "界面起不来：%s\n", error.c_str());

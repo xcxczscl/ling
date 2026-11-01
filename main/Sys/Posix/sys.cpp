@@ -5,8 +5,11 @@
 #include "ling/sys.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
+#include <sys/wait.h>
 
 namespace ling {
 namespace sys {
@@ -26,6 +29,18 @@ std::filesystem::path executable_dir() {
 std::string read_env(const char* name) {
     const char* value = std::getenv(name);
     return value == nullptr ? std::string() : std::string(value);
+}
+
+std::filesystem::path default_data_root() {
+    const auto exe_dir = executable_dir();
+    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
+        return exe_dir / "data";
+    }
+    const std::string home = read_env("HOME");
+    if (!home.empty()) {
+        return std::filesystem::path(home) / ".local" / "share" / "ling";
+    }
+    return std::filesystem::path(".") / "data";
 }
 
 std::string from_ansi(const char* text) {
@@ -58,13 +73,29 @@ void register_ctrl_c(void (*handler)()) {
 // ---- 外部命令 ----
 
 bool open_in_browser(const std::string& url, std::string* error) {
-    const std::string command = "xdg-open '" + url + "' >/dev/null 2>&1";
-    if (std::system(command.c_str()) != 0) {
+    // 不用 system("xdg-open '...'")：URL 里的单引号能逃逸成命令注入。
+    // fork + execlp 不经过 shell，参数原样传给 xdg-open。
+    const pid_t pid = ::fork();
+    if (pid < 0) {
         if (error != nullptr) {
-            *error = "xdg-open 执行失败";
+            *error = "fork 失败";
         }
         return false;
     }
+    if (pid == 0) {
+        // 子进程：丢掉输出，直接 exec。execlp 失败就退 127。
+        const int devnull = ::open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            ::dup2(devnull, STDOUT_FILENO);
+            ::dup2(devnull, STDERR_FILENO);
+            ::close(devnull);
+        }
+        ::execlp("xdg-open", "xdg-open", url.c_str(), static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    // 不阻塞等待：打开浏览器是异步动作，ling open 命令马上要退出。
+    // 能回收就回收，不能回收的（xdg-open 还没退）等 ling open 退出后由 init 收养。
+    ::waitpid(pid, nullptr, WNOHANG);
     return true;
 }
 
@@ -89,10 +120,23 @@ void close_socket(socket_handle fd) { ::close(fd); }
 bool socket_would_block() { return errno == EAGAIN || errno == EWOULDBLOCK; }
 
 int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
-    timeval timeout{};
-    timeout.tv_sec = timeout_ms / 1000;
-    timeout.tv_usec = (timeout_ms % 1000) * 1000;
-    return ::select(max_fd + 1, readfds, nullptr, nullptr, &timeout);
+    // EINTR（被信号打断，如 Ctrl+C）时重试，直到超时或非 EINTR 错误；
+    // 调用方只看到「就绪/超时/真错误」，不必自己处理信号打断。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        timeval timeout{};
+        timeout.tv_sec = static_cast<long>(left.count() / 1000);
+        timeout.tv_usec = static_cast<long>((left.count() % 1000) * 1000);
+        const int ready = ::select(max_fd + 1, readfds, nullptr, nullptr, &timeout);
+        if (ready >= 0 || errno != EINTR) {
+            return ready;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return 0;  // 被信号一路打断到超时
+        }
+    }
 }
 
 void set_socket_timeout(socket_handle fd, int timeout_ms) {

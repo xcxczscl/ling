@@ -108,30 +108,6 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "插件名就是 ling plugins 第一列显示的那个，比如 demo-a。\n");
 }
 
-// 数据根的默认值。便携判定 + 平台默认目录都是 ling 自己的规则，不属于平台抽象层；
-// 这里只调 sys:: 拿「可执行文件目录」和「读环境变量」这两个平台能力。
-std::filesystem::path default_data_root() {
-    // 便携模式：exe 同目录有 ling.portable 空标记文件时，数据跟着程序走，
-    // 存在 <程序目录>/data 下，避免和程序文件混在一起。
-    const auto exe_dir = ling::sys::executable_dir();
-    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
-        return exe_dir / "data";
-    }
-#ifdef _WIN32
-    const std::string appdata = ling::sys::read_env("APPDATA");
-    if (!appdata.empty()) {
-        return std::filesystem::path(appdata) / "ling";
-    }
-    return std::filesystem::path(".") / "data";
-#else
-    const std::string home = ling::sys::read_env("HOME");
-    if (!home.empty()) {
-        return std::filesystem::path(home) / ".local" / "share" / "ling";
-    }
-    return std::filesystem::path(".") / "data";
-#endif
-}
-
 struct Args {
     std::string command;
     std::vector<std::string> positional;
@@ -346,8 +322,10 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     // 而 core-ui 这个侧车插件在装载时就要读它（拿口令连宿主）。端口先开，
     // 装载阶段的插件才能一装就通。
     ling::AdminServer server(&kernel);
+    // args.port 是 uint16_t，加偏移可能越过 65535 回绕；先算成 int 再夹到上限。
+    const int last_raw = static_cast<int>(args.port) + (args.port < 8000 ? 99 : 79);
     const std::uint16_t last_port =
-        static_cast<std::uint16_t>(args.port + (args.port < 8000 ? 99 : 79));
+        static_cast<std::uint16_t>(last_raw > 65535 ? 65535 : last_raw);
     const std::string error = server.start(args.port, last_port);
     if (!error.empty()) {
         std::fprintf(stderr, "启动失败：%s\n", error.c_str());
@@ -559,7 +537,7 @@ int main(int argc, char** argv) {
     // POSIX 上这个守卫是空实现，保留它让两端写法一致。
     ling::sys::ConsoleUtf8Guard console_utf8;
     Args args;
-    args.data_dir = default_data_root();
+    args.data_dir = ling::sys::default_data_root();
 
     std::vector<std::string> raw_args;
     raw_args.reserve(static_cast<std::size_t>(argc > 0 ? argc - 1 : 0));

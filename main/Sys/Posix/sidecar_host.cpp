@@ -126,8 +126,15 @@ bool Sidecar::read(sidecar::Frame* out, int timeout_ms, bool* closed, std::strin
         if (ready > 0 && (item.revents & POLLIN) != 0) {
             char chunk[4096];
             const ssize_t got = ::read(static_cast<int>(stdout_read_), chunk, sizeof(chunk));
-            if (got <= 0) {
+            if (got < 0) {
+                if (errno == EINTR) {
+                    continue;  // 被信号打断，重试；剩余超时由下一轮 poll 重新算
+                }
                 *closed = true;
+                return false;
+            }
+            if (got == 0) {
+                *closed = true;  // 对端关闭
                 return false;
             }
             pending_.append(chunk, static_cast<std::size_t>(got));
@@ -136,6 +143,9 @@ bool Sidecar::read(sidecar::Frame* out, int timeout_ms, bool* closed, std::strin
         if (ready == 0) {
             error->clear();
             return false;
+        }
+        if (errno == EINTR) {
+            continue;  // poll 被信号打断（如 Ctrl+C），重试而不是当成断开
         }
         *closed = true;
         return false;
@@ -151,6 +161,9 @@ bool Sidecar::alive() {
     if (done == static_cast<pid_t>(process_)) {
         exited_ = true;
         exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        // waitpid 一旦返回 pid 就把子进程回收了，这个 pid 从此失效（可能被系统复用）。
+        // 立即置 0，否则 terminate() 会对一个已回收的 pid 再 kill，可能误杀无关进程。
+        process_ = 0;
         return false;
     }
     return done == 0;
@@ -165,37 +178,40 @@ int Sidecar::exit_code() {
     if (done == static_cast<pid_t>(process_)) {
         exited_ = true;
         exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        process_ = 0;  // 同上：回收后 pid 失效，置 0
         return exit_code_;
     }
     return -1;
 }
 
 void Sidecar::terminate(int wait_ms) {
-    if (process_ == 0) {
-        return;
-    }
-    const pid_t pid = static_cast<pid_t>(process_);
-    int status = 0;
-    if (::waitpid(pid, &status, WNOHANG) != pid) {
-        ::kill(pid, SIGTERM);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
-        bool done = false;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (::waitpid(pid, &status, WNOHANG) == pid) {
-                done = true;
-                break;
+    if (process_ != 0) {
+        const pid_t pid = static_cast<pid_t>(process_);
+        int status = 0;
+        if (::waitpid(pid, &status, WNOHANG) != pid) {
+            ::kill(pid, SIGTERM);
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+            bool done = false;
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (::waitpid(pid, &status, WNOHANG) == pid) {
+                    done = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            if (!done) {
+                ::kill(pid, SIGKILL);
+                ::waitpid(pid, &status, 0);
+            }
         }
-        if (!done) {
-            ::kill(pid, SIGKILL);
-            ::waitpid(pid, &status, 0);
-        }
+        exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        exited_ = true;
+        process_ = 0;
     }
-    exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    exited_ = true;
+    // 管道与进程生命周期分离：进程可能已被 alive()/exit_code() 回收（process_ 已置 0），
+    // 但管道还开着，这里无论进程是否回收都要关。
     close_handles();
-    process_ = 0;
 }
 
 void Sidecar::close_handles() {

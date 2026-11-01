@@ -21,7 +21,7 @@
 
 namespace ling {
 
-enum class PluginState { kInstalled, kActivated, kFailed, kUninstalled };
+enum class PluginState { kInstalled, kActivated, kFailed };
 
 const char* state_name(PluginState state);
 

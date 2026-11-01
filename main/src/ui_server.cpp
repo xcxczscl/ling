@@ -27,10 +27,6 @@ constexpr std::size_t kMaxRequestBytes = 1024 * 1024;
 constexpr int kRequestTimeoutSeconds = 10;
 constexpr int kHostCallTimeoutMs = 5000;
 
-// 页面还没做，先给一个能看清「服务端已经通了」的占位页。
-// 页面定稿后换掉这一段常量即可，服务端不用动。
-
-
 std::string status_text(int status) {
     switch (status) {
         case 200: return "OK";

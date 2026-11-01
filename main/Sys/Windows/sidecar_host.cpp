@@ -35,12 +35,20 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
         return "无法创建输入管道";
     }
     if (!::SetHandleInformation(parent_stdin_write, HANDLE_FLAG_INHERIT, 0)) {
+        ::CloseHandle(child_stdin_read);
+        ::CloseHandle(parent_stdin_write);
         return "无法设置输入管道";
     }
     if (!::CreatePipe(&parent_stdout_read, &child_stdout_write, &attributes, 0)) {
+        ::CloseHandle(child_stdin_read);
+        ::CloseHandle(parent_stdin_write);
         return "无法创建输出管道";
     }
     if (!::SetHandleInformation(parent_stdout_read, HANDLE_FLAG_INHERIT, 0)) {
+        ::CloseHandle(child_stdin_read);
+        ::CloseHandle(parent_stdin_write);
+        ::CloseHandle(parent_stdout_read);
+        ::CloseHandle(child_stdout_write);
         return "无法设置输出管道";
     }
 

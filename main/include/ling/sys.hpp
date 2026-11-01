@@ -44,6 +44,11 @@ namespace sys {
 // 当前可执行文件所在目录；拿不到返回空路径。便携判定、找随包运行时都靠它。
 std::filesystem::path executable_dir();
 
+// ling 的数据根默认值：程序目录有 ling.portable 标记时用 <程序目录>/data（便携模式，
+// 数据跟程序走），否则用平台标准目录（Windows %APPDATA%\ling，Linux ~/.local/share/ling）。
+// 宿主与 core-ui 都调它，避免两处各写一份再漂移。
+std::filesystem::path default_data_root();
+
 // 读环境变量，不存在返回空串。Windows 用 _dupenv_s（MSVC 把 getenv 标为不安全，
 // 而项目 /WX 会把警告当错误），POSIX 用 getenv。
 std::string read_env(const char* name);

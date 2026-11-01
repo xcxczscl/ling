@@ -4,6 +4,7 @@
 // 每个函数头上不重复写「Windows 版」——整个文件都是 Windows 版。
 #include "ling/sys.hpp"
 
+#include <chrono>
 #include <cstdlib>
 
 namespace ling {
@@ -29,6 +30,18 @@ std::string read_env(const char* name) {
     std::string result(value);
     std::free(value);
     return result;
+}
+
+std::filesystem::path default_data_root() {
+    const auto exe_dir = executable_dir();
+    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
+        return exe_dir / "data";
+    }
+    const std::string appdata = read_env("APPDATA");
+    if (!appdata.empty()) {
+        return std::filesystem::path(appdata) / "ling";
+    }
+    return std::filesystem::path(".") / "data";
 }
 
 // UTF-8 与宽字符互转。Windows API 走 UTF-16，程序内部走 UTF-8，两套编码的桥。
@@ -163,10 +176,22 @@ bool socket_would_block() {
 
 int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
     (void)max_fd;  // Windows 忽略 nfds
-    timeval timeout{};
-    timeout.tv_sec = timeout_ms / 1000;
-    timeout.tv_usec = (timeout_ms % 1000) * 1000;
-    return ::select(0, readfds, nullptr, nullptr, &timeout);
+    // EINTR（被信号打断）时重试，直到超时或非 EINTR 错误；调用方只看到「就绪/超时/真错误」。
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        timeval timeout{};
+        timeout.tv_sec = static_cast<long>(left.count() / 1000);
+        timeout.tv_usec = static_cast<long>((left.count() % 1000) * 1000);
+        const int ready = ::select(0, readfds, nullptr, nullptr, &timeout);
+        if (ready != SOCKET_ERROR || ::WSAGetLastError() != WSAEINTR) {
+            return ready;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return 0;  // 被信号一路打断到超时
+        }
+    }
 }
 
 void set_socket_timeout(socket_handle fd, int timeout_ms) {

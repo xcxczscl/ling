@@ -8,8 +8,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <iomanip>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -149,17 +151,11 @@ bool cron_matches(const Cron& cron, const std::tm& now) {
 // ---------------- 时间 ----------------
 
 std::tm parse_now(const std::string& text) {
+    // 用 std::get_time 解析，跨平台一致，不用 MSVC 的 sscanf_s 与 POSIX 的 sscanf 分叉。
+    // get_time 已把 tm_year 存成「年 - 1900」、tm_mon 存成 0-based，直接返回即可。
     std::tm result{};
-#ifdef _WIN32
-    // MSVC 把 sscanf 标为不安全，而插件目标开着 /WX。
-    sscanf_s(text.c_str(), "%d-%d-%dT%d:%d:%d", &result.tm_year, &result.tm_mon, &result.tm_mday,
-             &result.tm_hour, &result.tm_min, &result.tm_sec);
-#else
-    std::sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &result.tm_year, &result.tm_mon, &result.tm_mday,
-                &result.tm_hour, &result.tm_min, &result.tm_sec);
-#endif
-    result.tm_year -= 1900;
-    result.tm_mon -= 1;
+    std::istringstream input(text);
+    input >> std::get_time(&result, "%Y-%m-%dT%H:%M:%S");
     return result;
 }
 

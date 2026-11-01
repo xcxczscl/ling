@@ -146,8 +146,6 @@ const char* state_name(PluginState state) {
             return "activated";
         case PluginState::kFailed:
             return "failed";
-        case PluginState::kUninstalled:
-            return "uninstalled";
     }
     return "installed";
 }
@@ -355,7 +353,8 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
     return {};
 }
 
-std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    LoadedPlugin* plugin = find(plugin_id);
+std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
+    LoadedPlugin* plugin = find(plugin_id);
     if (plugin != nullptr) {
         const bool was_activated = plugin->state == PluginState::kActivated;
         if (was_activated) {
@@ -700,6 +699,8 @@ std::string Kernel::doctor_report() {
             ok = false;
             section["details"].push_back("session.json 不存在：" + session.string());
         } else {
+            // 这里的分平台不是系统调用差异，而是「安全策略还没在 Windows 上落地」：
+            // 属应用层策略，不属于 ling::sys 平台抽象层（那边只收口系统调用差异）。
 #ifdef _WIN32
             // Windows 上还没收紧到「仅当前用户」的 ACL（docs/log/031 记过这条不足）。
             // 与其假装检查过，不如把实际情况说出来。
@@ -1146,7 +1147,13 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "新版本的清单有问题，旧版本还在用：" + before.detail;
             return reply;
         }
-        const std::string old_version = before.manifest->version;
+        // load_manifest 读的是磁盘上的清单，也就是「新版本」；「上一个版本」要趁
+        // 卸载前从内存里取，否则 unload_one 之后就丢了。
+        const std::string new_version = before.manifest->version;
+        std::string previous_version;
+        if (const LoadedPlugin* current = find(id); current != nullptr) {
+            previous_version = current->manifest.version;
+        }
 
         // 让依赖它的先停：先置为不可用，调和一次，再换产物。
         reloading_.insert(id);
@@ -1164,8 +1171,8 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
 
         nlohmann::json result;
         result["id"] = id;
-        result["version"] = old_version;
-        result["previous_version"] = old_version;
+        result["version"] = new_version;
+        result["previous_version"] = previous_version;
         const LoadedPlugin* plugin = find(id);
         result["state"] = plugin != nullptr && plugin->state == PluginState::kActivated
                               ? "activated"
@@ -1404,6 +1411,8 @@ std::filesystem::path Kernel::python_interpreter() const {
         return std::filesystem::path(custom);
     }
     if (!program_dir_.empty()) {
+        // 随包 Python 运行时的目录布局因平台而异（Windows 是 python.exe，Linux 是
+        // bin/python3），这是「打包布局」策略，不是系统调用差异，故不放进 ling::sys。
 #ifdef _WIN32
         const auto bundled = program_dir_ / "runtime" / "python" / "python.exe";
 #else
@@ -2144,7 +2153,8 @@ std::string Kernel::write_config(const std::string& plugin_id, const std::string
     return {};
 }
 
-EmitStats Kernel::emit_from(const std::string& plugin_id, const std::string& topic,                            const std::uint8_t* payload, std::size_t len) {
+EmitStats Kernel::emit_from(const std::string& plugin_id, const std::string& topic,
+                            const std::uint8_t* payload, std::size_t len) {
     EmitStats stats;
     // 第 1 条：主题形状。
     if (!valid_topic_shape(topic)) {
