@@ -19,7 +19,8 @@ function(add_ling_plugin plugin_id)
     add_library(${plugin_id} SHARED "${source}")
     target_include_directories(${plugin_id} PRIVATE "${CMAKE_SOURCE_DIR}/main/include")
     # 插件也要解析 JSON：配置、日志、方法参数都是 JSON 文本。
-    target_link_libraries(${plugin_id} PRIVATE ling_plugin_api ling_json)
+    # ling_sys 是平台抽象层（local_time、atomic_replace 等），插件会用到。
+    target_link_libraries(${plugin_id} PRIVATE ling_plugin_api ling_sys ling_json)
 
     ling_set_standard(${plugin_id})
     ling_set_warnings(${plugin_id})
@@ -55,7 +56,7 @@ function(add_ling_sidecar plugin_id)
 
     add_executable(${plugin_id} "${source}")
     target_include_directories(${plugin_id} PRIVATE "${CMAKE_SOURCE_DIR}/main/include")
-    target_link_libraries(${plugin_id} PRIVATE ling_json)
+    target_link_libraries(${plugin_id} PRIVATE ling_sys ling_json)
 
     ling_set_standard(${plugin_id})
     ling_set_warnings(${plugin_id})

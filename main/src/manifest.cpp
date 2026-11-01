@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "ling/errors.hpp"
+#include "ling/sys.hpp"
 
 #if defined(__has_include)
 #if __has_include(<toml.hpp>)
@@ -254,11 +255,7 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
     };
 
     // 第 8 步：产物组合。
-#ifdef _WIN32
-    const std::string artifact_name = manifest.id + ".dll";
-#else
-    const std::string artifact_name = manifest.id + ".so";
-#endif
+    const std::string artifact_name = manifest.id + sys::shared_library_suffix();
     manifest.artifact = artifact_name;
     const bool has_artifact = std::filesystem::exists(dir / artifact_name);
     if (manifest.sidecar.present && has_artifact) {

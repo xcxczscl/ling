@@ -1,4 +1,5 @@
 #include "ling/log.hpp"
+#include "ling/sys.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -29,12 +30,7 @@ const char* level_text(LogLevel level) {
 std::string timestamp() {
     const auto now = std::chrono::system_clock::now();
     const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &seconds);
-#else
-    localtime_r(&seconds, &local);
-#endif
+    const std::tm local = sys::local_time(&seconds);
     char buffer[32] = {};
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d",
                   local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour,
@@ -61,12 +57,7 @@ void log_write(LogLevel level, const std::string& module, const std::string& mes
     const std::string line = timestamp() + " [" + level_text(level) + "] " + module + " " + message;
     std::fprintf(stderr, "%s\n", line.c_str());
     if (!g_log_file.empty()) {
-        std::FILE* file = nullptr;
-#ifdef _WIN32
-        fopen_s(&file, g_log_file.string().c_str(), "a");
-#else
-        file = std::fopen(g_log_file.string().c_str(), "a");
-#endif
+        std::FILE* file = sys::open_append(g_log_file);
         if (file != nullptr) {
             std::fprintf(file, "%s\n", line.c_str());
             std::fclose(file);

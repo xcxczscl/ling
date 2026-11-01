@@ -1,6 +1,6 @@
 // core-ui 的 desktop 形态：WebView2 独立窗口。
 //
-// 与 webui 共用 main/ui/app.cpp 的「握手、自检、起服务」，差别只在：
+// 与 webui 共用 app.cpp 的「握手、自检、起服务」，差别只在：
 // 起一个 Win32 窗口、内嵌 WebView2 控件，导航到本机界面地址。
 //
 // 依赖 WebView2（Windows 10/11 自带运行时，SDK 在 third_party/webview2）。

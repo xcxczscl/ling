@@ -12,18 +12,10 @@
 #include "ling/admin.hpp"
 #include "ling/errors.hpp"
 #include "ling/kernel.hpp"
+#include "ling/sys.hpp"
 #include "ling/version.hpp"
 
 #include <nlohmann/json.hpp>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <shellapi.h>
-#else
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -76,43 +68,6 @@ std::string track_text(const std::string& track) {
     return track;
 }
 
-#ifdef _WIN32
-// 控制台代码页临时切到 UTF-8。
-//
-// 程序内部一律用 UTF-8：源码带 /utf-8 编译、日志文件写 UTF-8 字节。
-// 但 Windows 控制台默认代码页是 936（GBK），把 UTF-8 字节按 GBK 解读就会
-// 把「数据根」显示成「鏁版嵁鏍?」。这里在进程启动时切到 65001，退出时还原——
-// 不还原会污染同一个控制台里后续运行的其他程序。
-class ConsoleUtf8Scope {
-public:
-    ConsoleUtf8Scope() {
-        previous_input_ = ::GetConsoleCP();
-        previous_output_ = ::GetConsoleOutputCP();
-        if (previous_output_ != CP_UTF8) {
-            ::SetConsoleOutputCP(CP_UTF8);
-        }
-        if (previous_input_ != CP_UTF8) {
-            ::SetConsoleCP(CP_UTF8);
-        }
-    }
-    ~ConsoleUtf8Scope() {
-        if (previous_output_ != 0 && previous_output_ != CP_UTF8) {
-            ::SetConsoleOutputCP(previous_output_);
-        }
-        if (previous_input_ != 0 && previous_input_ != CP_UTF8) {
-            ::SetConsoleCP(previous_input_);
-        }
-    }
-
-    ConsoleUtf8Scope(const ConsoleUtf8Scope&) = delete;
-    ConsoleUtf8Scope& operator=(const ConsoleUtf8Scope&) = delete;
-
-private:
-    UINT previous_input_ = 0;
-    UINT previous_output_ = 0;
-};
-#endif
-
 void print_usage(std::FILE* out) {
     std::fprintf(out, "ling %s —— 插件宿主。装插件、用插件，自己不带功能。\n\n",
                  ling::version_string());
@@ -153,59 +108,23 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "插件名就是 ling plugins 第一列显示的那个，比如 demo-a。\n");
 }
 
-// 读环境变量。MSVC 把 getenv 标为不安全（C4996），而 /WX 会把它当错误，
-// 所以在 Windows 上用 _dupenv_s，其它平台仍用 getenv。
-std::string read_env(const char* name) {
-#ifdef _WIN32
-    char* value = nullptr;
-    size_t length = 0;
-    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
-        return {};
-    }
-    std::string result(value);
-    std::free(value);
-    return result;
-#else
-    const char* value = std::getenv(name);
-    return value == nullptr ? std::string() : std::string(value);
-#endif
-}
-
-// 返回 ling.exe 所在目录；失败返回空路径。便携判定用它定位标记文件。
-std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    std::wstring buf(32768, L'\0');
-    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-    if (n == 0) {
-        return {};
-    }
-    return std::filesystem::path(buf.substr(0, n)).parent_path();
-#else
-    std::string buf(4096, '\0');
-    const ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
-    if (n < 0) {
-        return {};
-    }
-    buf.resize(static_cast<std::size_t>(n));
-    return std::filesystem::path(buf).parent_path();
-#endif
-}
-
+// 数据根的默认值。便携判定 + 平台默认目录都是 ling 自己的规则，不属于平台抽象层；
+// 这里只调 sys:: 拿「可执行文件目录」和「读环境变量」这两个平台能力。
 std::filesystem::path default_data_root() {
     // 便携模式：exe 同目录有 ling.portable 空标记文件时，数据跟着程序走，
     // 存在 <程序目录>/data 下，避免和程序文件混在一起。
-    const auto exe_dir = executable_dir();
+    const auto exe_dir = ling::sys::executable_dir();
     if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
         return exe_dir / "data";
     }
 #ifdef _WIN32
-    const std::string appdata = read_env("APPDATA");
+    const std::string appdata = ling::sys::read_env("APPDATA");
     if (!appdata.empty()) {
         return std::filesystem::path(appdata) / "ling";
     }
     return std::filesystem::path(".") / "data";
 #else
-    const std::string home = read_env("HOME");
+    const std::string home = ling::sys::read_env("HOME");
     if (!home.empty()) {
         return std::filesystem::path(home) / ".local" / "share" / "ling";
     }
@@ -413,24 +332,12 @@ int exit_code_of(const ling::AdminReply& reply) {
     return 4;
 }
 
-#ifdef _WIN32
-BOOL WINAPI on_console_ctrl(DWORD type) {
-    (void)type;
-    g_stop_requested.store(true);
-    return TRUE;
-}
-#else
-// Linux 上没有 Ctrl+C 回调，用信号。处理函数里只置标志，真正的收尾在主循环里做。
-void on_posix_signal(int) { g_stop_requested.store(true); }
-#endif
+// Ctrl+C 回调：只置停止标志，真正的收尾在主循环里做。平台差异（SetConsoleCtrlHandler
+// 对 signal）收口在 ling::sys::register_ctrl_c 里。
+void request_stop() { g_stop_requested.store(true); }
 
 int run_serve(const Args& args, const std::filesystem::path& program_dir) {
-#ifdef _WIN32
-    ::SetConsoleCtrlHandler(on_console_ctrl, TRUE);
-#else
-    std::signal(SIGINT, on_posix_signal);
-    std::signal(SIGTERM, on_posix_signal);
-#endif
+    ling::sys::register_ctrl_c(request_stop);
     ling::Kernel kernel(args.data_dir);
     // 界面进程还没起，这时 registry.json 里的 ui_port 一定是上一次留下的陈旧值。
     kernel.clear_stale_ui_port();
@@ -479,48 +386,6 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
 
 }  // namespace
 
-#ifdef _WIN32
-// Windows 把命令行参数按「系统当前代码页」交给程序（中文系统是 936）。
-// 程序内部一律 UTF-8，所以入口处转一次：不转的话，带中文的插件目录与
-// `--args '{"message":"到点了"}'` 到这里就已经是坏字节了。
-// UTF-8 → 宽字符，给 Windows API 用（打开浏览器）。
-std::wstring to_wide(const std::string& text) {
-    if (text.empty()) {
-        return {};
-    }
-    const int wide_len = ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (wide_len <= 1) {
-        return {};
-    }
-    std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), wide_len);
-    wide.resize(static_cast<std::size_t>(wide_len - 1));
-    return wide;
-}
-
-std::string from_ansi(const char* text) {
-    if (text == nullptr || *text == '\0') {
-        return {};
-    }
-    const int wide_len = ::MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
-    if (wide_len <= 1) {
-        return std::string(text);
-    }
-    std::wstring wide(static_cast<std::size_t>(wide_len), L'\0');
-    ::MultiByteToWideChar(CP_ACP, 0, text, -1, wide.data(), wide_len);
-
-    const int utf8_len =
-        ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (utf8_len <= 1) {
-        return {};
-    }
-    std::string utf8(static_cast<std::size_t>(utf8_len), '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), utf8_len, nullptr, nullptr);
-    utf8.resize(static_cast<std::size_t>(utf8_len - 1));
-    return utf8;
-}
-#endif
-
 // `ling job` 的三种动作。任务定义存在 core-settings 里，由 core-job 解释；
 // 这三条命令只是把参数整理成一次 kernel.call（04/06 §4.5、§5.7）。
 // 用浏览器打开本机界面：读端口与口令，拼好地址交给默认浏览器。
@@ -541,21 +406,11 @@ int run_open(const Args& args) {
     }
     const std::string url = "http://127.0.0.1:" + std::to_string(reg["ui_port"].get<int>()) +
                             "/?token=" + ses["token"].get<std::string>();
-#ifdef _WIN32
-    const auto result = reinterpret_cast<std::intptr_t>(
-        ::ShellExecuteW(nullptr, L"open", to_wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-    if (result <= 32) {
-        std::fprintf(stderr, "没能打开浏览器（错误码 %lld）。手动打开：%s\n",
-                     static_cast<long long>(result), url.c_str());
+    std::string error;
+    if (!ling::sys::open_in_browser(url, &error)) {
+        std::fprintf(stderr, "没能打开浏览器（%s）。手动打开：%s\n", error.c_str(), url.c_str());
         return 3;
     }
-#else
-    const std::string command = "xdg-open '" + url + "' >/dev/null 2>&1";
-    if (std::system(command.c_str()) != 0) {
-        std::fprintf(stderr, "没能打开浏览器。手动打开：%s\n", url.c_str());
-        return 3;
-    }
-#endif
     std::printf("已在浏览器打开界面。\n");
     return 0;
 }
@@ -700,21 +555,17 @@ int run_job(const Args& args) {
 }
 
 int main(int argc, char** argv) {
-#ifdef _WIN32
     // 必须放在任何输出之前：Kernel 构造时就会往 stderr 打日志。
-    ConsoleUtf8Scope console_utf8;
-#endif
+    // POSIX 上这个守卫是空实现，保留它让两端写法一致。
+    ling::sys::ConsoleUtf8Guard console_utf8;
     Args args;
     args.data_dir = default_data_root();
 
     std::vector<std::string> raw_args;
     raw_args.reserve(static_cast<std::size_t>(argc > 0 ? argc - 1 : 0));
     for (int i = 1; i < argc; ++i) {
-#ifdef _WIN32
-        raw_args.push_back(from_ansi(argv[i]));
-#else
-        raw_args.push_back(argv[i]);
-#endif
+        // Windows 参数按系统代码页进来，这里转成 UTF-8；POSIX 上原样返回。
+        raw_args.push_back(ling::sys::from_ansi(argv[i]));
     }
     const int arg_count = static_cast<int>(raw_args.size());
 
@@ -775,11 +626,8 @@ int main(int argc, char** argv) {
     if (args.command == "serve") {
         // 内置插件的产物在 <程序目录>/plugins/ 下，serve 用这个位置做首次预装。
         std::error_code ec;
-#ifdef _WIN32
-        const auto self_path = std::filesystem::u8path(from_ansi(argc > 0 ? argv[0] : ""));
-#else
-        const auto self_path = std::filesystem::path(argc > 0 ? argv[0] : "");
-#endif
+        const auto self_path =
+            std::filesystem::u8path(ling::sys::from_ansi(argc > 0 ? argv[0] : ""));
         const auto program_dir = std::filesystem::absolute(self_path, ec).parent_path();
         return run_serve(args, ec ? std::filesystem::current_path() : program_dir);
     }

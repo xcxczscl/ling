@@ -12,67 +12,24 @@
 #include "ling/admin.hpp"
 #include "ling/errors.hpp"
 #include "ling/sidecar_proto.hpp"
+#include "ling/sys.hpp"
 
 #include <nlohmann/json.hpp>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 namespace ling {
 namespace {
 
-std::string env_or_empty(const char* name) {
-#ifdef _WIN32
-    char* value = nullptr;
-    std::size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
-        return {};
-    }
-    std::string result(value);
-    std::free(value);
-    return result;
-#else
-    const char* value = std::getenv(name);
-    return value == nullptr ? std::string() : std::string(value);
-#endif
-}
-
-// 返回 core-ui 所在目录；失败返回空路径。
-std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    std::wstring buf(32768, L'\0');
-    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-    if (n == 0) {
-        return {};
-    }
-    return std::filesystem::path(buf.substr(0, n)).parent_path();
-#else
-    std::string buf(4096, '\0');
-    const ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
-    if (n < 0) {
-        return {};
-    }
-    buf.resize(static_cast<std::size_t>(n));
-    return std::filesystem::path(buf).parent_path();
-#endif
-}
-
 std::filesystem::path default_data_root() {
     // 与宿主一致：exe 同目录有 ling.portable 时数据存 <程序目录>/data。
-    const auto exe_dir = executable_dir();
+    const auto exe_dir = sys::executable_dir();
     if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
         return exe_dir / "data";
     }
-    const std::string appdata = env_or_empty("APPDATA");
+    const std::string appdata = sys::read_env("APPDATA");
     if (!appdata.empty()) {
         return std::filesystem::path(appdata) / "ling";
     }
-    const std::string home = env_or_empty("HOME");
+    const std::string home = sys::read_env("HOME");
     if (!home.empty()) {
         return std::filesystem::path(home) / ".local" / "share" / "ling";
     }
@@ -208,24 +165,11 @@ Args parse_args(int argc, char** argv) {
     return args;
 }
 
-#ifdef _WIN32
-BOOL WINAPI on_console_ctrl(DWORD type) {
-    (void)type;
-    return TRUE;
-}
-#else
-void on_posix_signal(int) {}
-#endif
-
 }  // namespace
 
 int ui_app_setup(int argc, char** argv, UiApp* app) {
-#ifdef _WIN32
-    ::SetConsoleCtrlHandler(on_console_ctrl, TRUE);
-#else
-    std::signal(SIGINT, on_posix_signal);
-    std::signal(SIGTERM, on_posix_signal);
-#endif
+    // 侧车进程忽略 Ctrl+C：它的生命周期由宿主管，用户按 Ctrl+C 不该直接杀掉它。
+    sys::register_ctrl_c([]() {});
 
     const Args args = parse_args(argc, argv);
     if (args.help) {
@@ -233,17 +177,17 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
     }
 
     std::filesystem::path data_root = args.data_dir;
-    const std::string env_root = env_or_empty("LING_UI_ROOT");
+    const std::string env_root = sys::read_env("LING_UI_ROOT");
     if (!env_root.empty()) {
         data_root = env_root;
     }
 
     // 侧车模式：有 LING_TOKEN 就说明是宿主拉起的，先握手。
-    const std::string sidecar_token = env_or_empty("LING_TOKEN");
-    const std::string plugin_id = env_or_empty("LING_PLUGIN_ID");
+    const std::string sidecar_token = sys::read_env("LING_TOKEN");
+    const std::string plugin_id = sys::read_env("LING_PLUGIN_ID");
     app->sidecar = !sidecar_token.empty();
     if (app->sidecar) {
-        const std::string own_data = env_or_empty("LING_DATA_DIR");
+        const std::string own_data = sys::read_env("LING_DATA_DIR");
         if (!own_data.empty()) {
             data_root = data_root_from_sidecar(own_data);
         }
@@ -253,7 +197,7 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
     }
 
     // 口令用 session.json 里那个（浏览器能填的只有它）。握手用的侧车口令另算。
-    std::string token = env_or_empty("LING_UI_TOKEN");
+    std::string token = sys::read_env("LING_UI_TOKEN");
     if (token.empty()) {
         std::string error;
         if (!admin::read_token(data_root, &token, &error)) {

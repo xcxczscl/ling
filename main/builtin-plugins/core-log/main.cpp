@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ling/plugin_api.h"
+#include "ling/sys.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -34,12 +35,7 @@ std::filesystem::path data_root_of(const char* data_dir) {
 
 std::string today_text() {
     const std::time_t stamp = std::time(nullptr);
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &stamp);
-#else
-    localtime_r(&stamp, &local);
-#endif
+    const std::tm local = ling::sys::local_time(&stamp);
     char buffer[16] = {};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &local);
     return buffer;
@@ -47,12 +43,7 @@ std::string today_text() {
 
 std::string stamp_text() {
     const std::time_t stamp = std::time(nullptr);
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &stamp);
-#else
-    localtime_r(&stamp, &local);
-#endif
+    const std::tm local = ling::sys::local_time(&stamp);
     char buffer[32] = {};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &local);
     return buffer;

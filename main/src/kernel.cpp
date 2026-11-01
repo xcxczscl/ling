@@ -16,46 +16,15 @@
 #include "ling/depgraph.hpp"
 #include "ling/errors.hpp"
 #include "ling/log.hpp"
+#include "ling/sys.hpp"
 #include "ling/version.hpp"
 
 #include <nlohmann/json.hpp>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 namespace ling {
 namespace {
 
 Kernel* g_kernel = nullptr;  // 单进程单宿主，见 03 §5.1 的进程模型
-
-void* load_library(const std::filesystem::path& path) {
-#ifdef _WIN32
-    return reinterpret_cast<void*>(::LoadLibraryA(path.string().c_str()));
-#else
-    return ::dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
-}
-
-void* find_symbol(void* module, const char* name) {
-#ifdef _WIN32
-    return reinterpret_cast<void*>(
-        ::GetProcAddress(reinterpret_cast<HMODULE>(module), name));
-#else
-    return ::dlsym(module, name);
-#endif
-}
-
-void unload_library(void* module) {
-#ifdef _WIN32
-    ::FreeLibrary(reinterpret_cast<HMODULE>(module));
-#else
-    ::dlclose(module);
-#endif
-}
 
 // ---------- 宿主函数表实现 ----------
 
@@ -412,7 +381,7 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {    Loa
                                        std::to_string(patterns.size()) + " 条，已强制清空");
             }
             if (plugin->module != nullptr) {
-                unload_library(plugin->module);
+                sys::unload_library(plugin->module);
                 plugin->module = nullptr;
             }
             plugin->handle = nullptr;
@@ -1025,12 +994,7 @@ void fill_error(Kernel::KernelReply& reply, const std::string& text) {
 std::string iso8601_now() {
     const auto now = std::chrono::system_clock::now();
     const std::time_t stamp = std::chrono::system_clock::to_time_t(now);
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &stamp);
-#else
-    localtime_r(&stamp, &local);
-#endif
+    const std::tm local = sys::local_time(&stamp);
     char buffer[32] = {};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &local);
     return buffer;
@@ -1435,20 +1399,7 @@ std::string make_sidecar_token() {
 
 std::filesystem::path Kernel::python_interpreter() const {
     // 优先级：显式指定 → 随包分发的运行时 → 系统 PATH。
-    // 随包分发的位置先占住，等 M6 打包时把 Python 放进去，这里就不用改。
-    std::string custom;
-#ifdef _WIN32
-    char* buffer = nullptr;
-    std::size_t size = 0;
-    if (::_dupenv_s(&buffer, &size, "LING_PYTHON") == 0 && buffer != nullptr) {
-        custom = buffer;
-        std::free(buffer);
-    }
-#else
-    if (const char* value = std::getenv("LING_PYTHON"); value != nullptr) {
-        custom = value;
-    }
-#endif
+    const std::string custom = sys::read_env("LING_PYTHON");
     if (!custom.empty()) {
         return std::filesystem::path(custom);
     }
@@ -1917,15 +1868,15 @@ std::string Kernel::activate(LoadedPlugin& plugin) {
     }
 
     const auto path = plugins_dir() / plugin.manifest.id / plugin.manifest.artifact;
-    plugin.module = load_library(path);
+    plugin.module = sys::load_library(path);
     if (plugin.module == nullptr) {
         return std::string(err::kIo) + " 无法装载 " + path.string();
     }
 
-    auto* entry = reinterpret_cast<ling_plugin_entry_fn>(find_symbol(plugin.module,
+    auto* entry = reinterpret_cast<ling_plugin_entry_fn>(sys::find_symbol(plugin.module,
                                                                     "ling_plugin_entry"));
     if (entry == nullptr) {
-        unload_library(plugin.module);
+        sys::unload_library(plugin.module);
         plugin.module = nullptr;
         return std::string(err::kManifestInvalid) + " 缺少 ling_plugin_entry";
     }
@@ -1936,20 +1887,20 @@ std::string Kernel::activate(LoadedPlugin& plugin) {
     ling_plugin_descriptor desc{};
     void* handle = nullptr;
     if (entry(&host_api_, &desc, &handle) != 0) {
-        unload_library(plugin.module);
+        sys::unload_library(plugin.module);
         plugin.module = nullptr;
         return std::string(err::kInternal) + " 入口返回非 0";
     }
 
     if (desc.abi_version != LING_ABI_VERSION) {
-        unload_library(plugin.module);
+        sys::unload_library(plugin.module);
         plugin.module = nullptr;
         return std::string(err::kApiMismatch) + " ABI 版本 " +
                std::to_string(desc.abi_version) + " 与宿主 " + std::to_string(LING_ABI_VERSION) +
                " 不同";
     }
     if (desc.plugin_id == nullptr || plugin.manifest.id != desc.plugin_id) {
-        unload_library(plugin.module);
+        sys::unload_library(plugin.module);
         plugin.module = nullptr;
         return std::string(err::kManifestInvalid) + " 代码里的 plugin_id 与清单不一致";
     }
@@ -2021,7 +1972,7 @@ void Kernel::deactivate(LoadedPlugin& plugin) {
                                std::to_string(patterns.size()) + " 条，已强制清空");
     }
     if (plugin.module != nullptr) {
-        unload_library(plugin.module);
+        sys::unload_library(plugin.module);
         plugin.module = nullptr;
     }
     plugin.handle = nullptr;

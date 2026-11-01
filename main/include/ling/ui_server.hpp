@@ -9,7 +9,7 @@
 
 namespace ling {
 
-// 页面内容，构建期从 main/ui/page.html 嵌进来。
+// 页面内容，构建期从 builtin-plugins/core-ui/page.html 嵌进来。
 const char* page_html();
 
 

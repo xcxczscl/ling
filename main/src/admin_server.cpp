@@ -13,57 +13,26 @@
 #include "ling/errors.hpp"
 #include "ling/kernel.hpp"
 #include "ling/log.hpp"
+#include "ling/sys.hpp"
 
 #include <nlohmann/json.hpp>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 namespace ling {
 namespace {
 
-#ifdef _WIN32
-using socket_t = SOCKET;
-constexpr socket_t kBadSocket = INVALID_SOCKET;
-constexpr int kProtoVersion = 1;
-
-void close_socket(socket_t fd) { ::closesocket(fd); }
-
-void ensure_winsock() {
-    static const bool ready = [] {
-        WSADATA data{};
-        return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }();
-    (void)ready;
-}
-#else
-using socket_t = int;
-constexpr socket_t kBadSocket = -1;
-constexpr int kProtoVersion = 1;
-
-void close_socket(socket_t fd) { ::close(fd); }
-void ensure_winsock() {}
-#endif
-
 constexpr std::size_t kMaxFrameBytes = 1024 * 1024;
+// 帧协议版本，两端一致才通（04/06 §2）。与套接字无关，别和平台层混在一起。
+constexpr int kProtoVersion = 1;
 constexpr int kAuthTimeoutSeconds = 5;
 
 struct Conn {
-    socket_t fd = kBadSocket;
+    sys::socket_handle fd = sys::bad_socket();
     std::string buffer;
     bool authed = false;
     std::chrono::steady_clock::time_point opened;
 };
 
-bool send_all(socket_t fd, const std::string& data) {
+bool send_all(sys::socket_handle fd, const std::string& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
         const auto remaining = static_cast<int>(data.size() - sent);
@@ -114,7 +83,7 @@ std::string ok_frame(const nlohmann::json& id, const std::string& result_json) {
 
 struct AdminServer::Impl {
     Kernel* kernel = nullptr;
-    socket_t listen_fd = kBadSocket;
+    sys::socket_handle listen_fd = sys::bad_socket();
     std::uint16_t port = 0;
     std::string token;
     std::filesystem::path data_root;
@@ -122,7 +91,7 @@ struct AdminServer::Impl {
     bool stop_requested = false;
 
     void close_conn(std::size_t index) {
-        close_socket(conns[index].fd);
+        sys::close_socket(conns[index].fd);
         conns.erase(conns.begin() + static_cast<std::ptrdiff_t>(index));
     }
 
@@ -219,10 +188,10 @@ AdminServer::AdminServer(Kernel* kernel) : impl_(std::make_unique<Impl>()) {
 AdminServer::~AdminServer() { stop(); }
 
 std::string AdminServer::start(std::uint16_t start_port, std::uint16_t last_port) {
-    ensure_winsock();
+    sys::socket_startup();
 
     impl_->listen_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (impl_->listen_fd == kBadSocket) {
+    if (impl_->listen_fd == sys::bad_socket()) {
         return "无法创建监听套接字";
     }
 
@@ -239,15 +208,15 @@ std::string AdminServer::start(std::uint16_t start_port, std::uint16_t last_port
         }
     }
     if (impl_->port == 0) {
-        close_socket(impl_->listen_fd);
-        impl_->listen_fd = kBadSocket;
+        sys::close_socket(impl_->listen_fd);
+        impl_->listen_fd = sys::bad_socket();
         return "端口 " + std::to_string(start_port) + " 至 " + std::to_string(last_port) +
                " 全部被占用";
     }
 
     if (::listen(impl_->listen_fd, 8) != 0) {
-        close_socket(impl_->listen_fd);
-        impl_->listen_fd = kBadSocket;
+        sys::close_socket(impl_->listen_fd);
+        impl_->listen_fd = sys::bad_socket();
         return "监听失败";
     }
 
@@ -272,14 +241,14 @@ std::string AdminServer::start(std::uint16_t start_port, std::uint16_t last_port
 std::uint16_t AdminServer::port() const { return impl_->port; }
 
 bool AdminServer::poll(int timeout_ms) {
-    if (impl_->listen_fd == kBadSocket) {
+    if (impl_->listen_fd == sys::bad_socket()) {
         return false;
     }
 
     fd_set readable;
     FD_ZERO(&readable);
     FD_SET(impl_->listen_fd, &readable);
-    socket_t max_fd = impl_->listen_fd;
+    sys::socket_handle max_fd = impl_->listen_fd;
     for (const auto& conn : impl_->conns) {
         FD_SET(conn.fd, &readable);
         if (conn.fd > max_fd) {
@@ -287,14 +256,7 @@ bool AdminServer::poll(int timeout_ms) {
         }
     }
 
-    timeval timeout{};
-    timeout.tv_sec = timeout_ms / 1000;
-    timeout.tv_usec = (timeout_ms % 1000) * 1000;
-#ifdef _WIN32
-    const int ready = ::select(0, &readable, nullptr, nullptr, &timeout);
-#else
-    const int ready = ::select(max_fd + 1, &readable, nullptr, nullptr, &timeout);
-#endif
+    const int ready = sys::socket_select(max_fd, &readable, timeout_ms);
     if (ready < 0) {
         log_warn("admin", "select 返回错误，停止监听");
         return false;
@@ -303,9 +265,9 @@ bool AdminServer::poll(int timeout_ms) {
     if (FD_ISSET(impl_->listen_fd, &readable)) {
         sockaddr_in peer{};
         socklen_t peer_len = sizeof(peer);
-        const socket_t fd =
+        const sys::socket_handle fd =
             ::accept(impl_->listen_fd, reinterpret_cast<sockaddr*>(&peer), &peer_len);
-        if (fd != kBadSocket) {
+        if (fd != sys::bad_socket()) {
             Conn conn;
             conn.fd = fd;
             conn.opened = std::chrono::steady_clock::now();
@@ -369,12 +331,12 @@ bool AdminServer::poll(int timeout_ms) {
 
 void AdminServer::stop() {
     for (auto& conn : impl_->conns) {
-        close_socket(conn.fd);
+        sys::close_socket(conn.fd);
     }
     impl_->conns.clear();
-    if (impl_->listen_fd != kBadSocket) {
-        close_socket(impl_->listen_fd);
-        impl_->listen_fd = kBadSocket;
+    if (impl_->listen_fd != sys::bad_socket()) {
+        sys::close_socket(impl_->listen_fd);
+        impl_->listen_fd = sys::bad_socket();
     }
     if (!impl_->token.empty()) {
         std::error_code ec;

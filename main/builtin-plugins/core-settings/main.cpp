@@ -13,13 +13,9 @@
 #include <string>
 
 #include "ling/plugin_api.h"
+#include "ling/sys.hpp"
 
 #include <nlohmann/json.hpp>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
 
 namespace {
 
@@ -37,12 +33,7 @@ State g;
 
 std::string now_text() {
     const std::time_t stamp = std::time(nullptr);
-    std::tm local{};
-#ifdef _WIN32
-    localtime_s(&local, &stamp);
-#else
-    localtime_r(&stamp, &local);
-#endif
+    const std::tm local = ling::sys::local_time(&stamp);
     char buffer[32] = {};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &local);
     return buffer;
@@ -73,15 +64,7 @@ bool save_document() {
     }
     output.close();
 
-#ifdef _WIN32
-    // rename 在 Windows 上不覆盖已存在的目标，用 MoveFileEx 换取「替换」语义。
-    return ::MoveFileExA(tmp_path.string().c_str(), tmp.string().c_str(),
-                         MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-    std::error_code ec;
-    std::filesystem::rename(tmp_path, tmp, ec);
-    return !ec;
-#endif
+    return ling::sys::atomic_replace(tmp_path, tmp);
 }
 
 // 载入结果。三种结果对应三种处理方式，不能混成一个 bool：
