@@ -20,6 +20,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -138,9 +141,9 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  --help               显示本说明\n\n");
     std::fprintf(out, "进阶选项（一般用不到）：\n");
 #ifdef _WIN32
-    std::fprintf(out, "  --data-dir <目录>    指定数据目录，默认 %%APPDATA%%\\ling\n");
+    std::fprintf(out, "  --data-dir <目录>    指定数据目录。默认 %%APPDATA%%\\ling；ling.exe 旁边有 ling.portable 时用程序目录下的 data\n");
 #else
-    std::fprintf(out, "  --data-dir <目录>    指定数据目录，默认 ~/.local/share/ling\n");
+    std::fprintf(out, "  --data-dir <目录>    指定数据目录。默认 ~/.local/share/ling；ling 旁边有 ling.portable 时用程序目录下的 data\n");
 #endif
     std::fprintf(out, "  --port <端口>        启动时用哪个端口，默认 7900\n\n");
     std::fprintf(out, "第一次用，按这个顺序：\n");
@@ -168,7 +171,33 @@ std::string read_env(const char* name) {
 #endif
 }
 
+// 返回 ling.exe 所在目录；失败返回空路径。便携判定用它定位标记文件。
+std::filesystem::path executable_dir() {
+#ifdef _WIN32
+    std::wstring buf(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (n == 0) {
+        return {};
+    }
+    return std::filesystem::path(buf.substr(0, n)).parent_path();
+#else
+    std::string buf(4096, '\0');
+    const ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+    if (n < 0) {
+        return {};
+    }
+    buf.resize(static_cast<std::size_t>(n));
+    return std::filesystem::path(buf).parent_path();
+#endif
+}
+
 std::filesystem::path default_data_root() {
+    // 便携模式：exe 同目录有 ling.portable 空标记文件时，数据跟着程序走，
+    // 存在 <程序目录>/data 下，避免和程序文件混在一起。
+    const auto exe_dir = executable_dir();
+    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
+        return exe_dir / "data";
+    }
 #ifdef _WIN32
     const std::string appdata = read_env("APPDATA");
     if (!appdata.empty()) {

@@ -18,6 +18,9 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 namespace ling {
@@ -39,7 +42,32 @@ std::string env_or_empty(const char* name) {
 #endif
 }
 
+// 返回 core-ui 所在目录；失败返回空路径。
+std::filesystem::path executable_dir() {
+#ifdef _WIN32
+    std::wstring buf(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (n == 0) {
+        return {};
+    }
+    return std::filesystem::path(buf.substr(0, n)).parent_path();
+#else
+    std::string buf(4096, '\0');
+    const ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+    if (n < 0) {
+        return {};
+    }
+    buf.resize(static_cast<std::size_t>(n));
+    return std::filesystem::path(buf).parent_path();
+#endif
+}
+
 std::filesystem::path default_data_root() {
+    // 与宿主一致：exe 同目录有 ling.portable 时数据存 <程序目录>/data。
+    const auto exe_dir = executable_dir();
+    if (!exe_dir.empty() && std::filesystem::exists(exe_dir / "ling.portable")) {
+        return exe_dir / "data";
+    }
     const std::string appdata = env_or_empty("APPDATA");
     if (!appdata.empty()) {
         return std::filesystem::path(appdata) / "ling";

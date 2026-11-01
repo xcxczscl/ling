@@ -24,6 +24,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # 随包分发、但只属于内置插件的，demo 示例不打包。
 BUILTIN_PLUGINS = ["core-settings", "core-plugin-manager", "core-log", "core-job", "core-ui"]
 
+# 便携标记：exe 同目录有这个空文件，宿主就把数据存到 <程序目录>/data（跟程序走），
+# 否则存 %APPDATA%\ling。便携 zip 固定带它，安装包靠「便携模式」选项决定带不带。
+PORTABLE_MARK = "ling.portable"
+
 # VC++ 运行库（MSVC 动态 CRT）。ling.exe 与侧车 core-ui.exe 都是 /MD 编译，
 # 干净机器上没有这些 DLL 会启动失败（报「找不到 MSVCP140.dll」）。UCRT 的
 # api-ms-win-crt-*.dll 是 Win10/11 系统自带，不用打包；这里只带非系统组件。
@@ -59,6 +63,8 @@ def build_zip(preset, desktop):
     print(f"打包便携 zip → {archive.name}")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(exe, "ling.exe")
+        # 便携标记：解压即用版本数据跟程序走（存 <程序目录>/data）。
+        zf.writestr(PORTABLE_MARK, "")
         # VC++ 运行库：放两份——根（宿主 ling.exe + 进程内插件）、
         # plugins/core-ui（侧车 core-ui.exe 是独立进程，DLL 搜索只看自己目录）。
         for dll in crt_dlls():
@@ -98,6 +104,9 @@ def build_iss(preset):
         return 1
 
     version = version_string(exe)
+    # 便携标记的空文件，作为 Inno 的源；勾选「便携模式」任务时才装。
+    portable_stub = ROOT / "dist" / (PORTABLE_MARK + ".stub")
+    portable_stub.write_bytes(b"")
     # 收集要装的文件，用 Inno 的 [Files] 语法表达。
     files = []
     files.append(("ling.exe", str(exe)))
@@ -125,7 +134,9 @@ def build_iss(preset):
     lines = ['[Setup]',
              f'AppName=ling',
              f'AppVersion={version}',
-             'DefaultDirName={autopf}\\ling',
+             # 用户级安装、免管理员：数据能写进程序目录，「便携模式」才成立。
+             'DefaultDirName={localappdata}\\Programs\\ling',
+             'PrivilegesRequired=lowest',
              'DefaultGroupName=ling',
              'ArchitecturesAllowed=x64compatible',
              'ArchitecturesInstallIn64BitMode=x64compatible',
@@ -134,9 +145,14 @@ def build_iss(preset):
              'Compression=lzma2',
              'SolidCompression=yes',
              '',
+             '[Tasks]',
+             'Name: "portable"; Description: "便携模式（数据存程序目录）"; GroupDescription: "数据存放位置："; Flags: unchecked',
+             '',
              '[Files]']
     for dest, src in files:
         lines.append(f'Source: "{src}"; DestDir: "{{app}}\\{pathlib.Path(dest).parent.as_posix()}"; Flags: ignoreversion')
+    # 便携标记：勾选「便携模式」任务才写入，装成 ling.portable 本名。
+    lines.append(f'Source: "{portable_stub}"; DestDir: "{{app}}"; DestName: "{PORTABLE_MARK}"; Flags: ignoreversion; Tasks: portable')
     lines += ['', '[Icons]',
               'Name: "{group}\\ling"; Filename: "{app}\\ling.exe"',
               'Name: "{group}\\卸载 ling"; Filename: "{uninstallexe}"',
