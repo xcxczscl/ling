@@ -147,7 +147,13 @@ def main(argv):
         problems += check_pair(Path(argv[1]), Path(argv[2]))
         files = [Path(argv[1]), Path(argv[2])]
     else:
-        files = sorted(DOCS.rglob("*.md"))
+        # 日志（log）与归档（archive）是「不修改」目录：一个是历史记录，一个是冻结快照，
+        # 都不参与校验，否则归档里的旧快照会反复触发格式与两版对应误报。
+        files = sorted(
+            f for f in DOCS.rglob("*.md")
+            if "log" not in f.relative_to(DOCS).parts
+            and "archive" not in f.relative_to(DOCS).parts
+        )
         for f in files:
             rel = f.relative_to(DOCS)
             if "brief" in rel.parts:

@@ -21,7 +21,10 @@ def docs():
     paths = []
     for pat in ("docs/**/*.md", "README.md", "AGENTS.md"):
         paths.extend(ROOT.glob(pat))
-    return sorted(p for p in paths if "docs/log" not in p.as_posix())
+    return sorted(
+        p for p in paths
+        if "docs/log" not in p.as_posix() and "docs/archive" not in p.as_posix()
+    )
 
 
 def rel(p):
