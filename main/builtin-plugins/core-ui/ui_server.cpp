@@ -4,7 +4,7 @@
 //   1. 只绑回环，任何情况下都不对外网开放（core-ui/02 §1）。
 //   2. 每个动作都转成一次管理端口调用，界面自己不做业务，也不碰内核（core-ui/02 §3）。
 //   3. 单线程、select 轮询，与宿主同一套风格，不引网络库。
-#include "ling/ui_server.hpp"
+#include "ui_server.hpp"
 
 #include <cctype>
 #include <chrono>

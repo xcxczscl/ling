@@ -87,38 +87,39 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 | 位置 | 作用 |
 |---|---|
-| `main/CMakeLists.txt` | 宿主、内核、平台层、core-ui 的构建；复制 Python SDK 与嵌入运行时到产物目录 |
+| `main/CMakeLists.txt` | 宿主、内核、平台层的构建；复制 Python SDK 与嵌入运行时到产物目录 |
 | `main/app/main.cpp` | 命令行入口：serve、install、uninstall、plugins、logs、job、open、doctor、reload、restart、shutdown 等全部子命令 |
-| `main/src/` | 内核实现，编成静态库 `ling_core`（见下表） |
+| `main/src/` | 内核实现，编成静态库 `ling_core`，按内核层 / 通道层分两个子目录（见下表） |
 | `main/include/ling/` | 对外头文件；插件边界只认 `plugin_api.h`，其余是宿主内部契约 |
-| `main/sys/` | 平台抽象层：Windows 与 POSIX 各一份实现，业务代码只 include `ling/sys.hpp` |
+| `main/Sys/` | 平台抽象层：Windows 与 POSIX 各一份实现，业务代码只 include `ling/sys.hpp` |
 | `main/SDK/python/` | Python 侧车 SDK（ling_sidecar.py），随宿主分发 |
-| `main/builtin-plugins/` | 五个内置插件：core-settings、core-plugin-manager、core-log、core-job、core-ui |
+| `main/builtin-plugins/` | 五个内置插件：core-settings、core-plugin-manager、core-log、core-job、core-ui，每个有自己的 CMakeLists.txt |
 
-`main/sys/` 是平台抽象层：所有「和操作系统打交道」的动作（取可执行文件目录、读环境变量、动态库加载、套接字、起子进程、控制台、打开浏览器）都收口在这里，业务代码不再写 `#ifdef _WIN32`。
+`main/Sys/` 是平台抽象层：所有「和操作系统打交道」的动作（取可执行文件目录、读环境变量、动态库加载、套接字、起子进程、控制台、打开浏览器）都收口在这里，业务代码不再写 `#ifdef _WIN32`。
 
 | 位置 | 作用 |
 |---|---|
-| `sys/Windows/` | Windows 实现：`sys.cpp` 平台函数 + `sidecar_host.cpp` 侧车进程 |
-| `sys/Posix/` | POSIX（Linux 等）实现，同名文件（还没在 Linux 上编过） |
+| `Sys/Windows/` | Windows 实现：`sys.cpp` 平台函数 + `sidecar_host.cpp` 侧车进程 |
+| `Sys/Posix/` | POSIX（Linux 等）实现，同名文件（还没在 Linux 上编过） |
 
-`main/src/` 逐文件：
+`main/src/` 按内核层 / 通道层分两个子目录（对应 `docs/ling/03-架构设计.md` §2.1 的分层）：
 
 | 文件 | 作用 |
 |---|---|
-| `kernel.cpp` | 内核骨架：装载表、路由表、装载/卸载 |
-| `manifest.cpp` | 插件清单解析与校验 |
-| `depgraph.cpp` | 依赖图与调和计算的纯函数部分 |
-| `gate.cpp` | 能力门禁：注册方法时校验「能力 ⊆ 清单声明」 |
-| `router.cpp` | 方法路由表：插件间调用转发 |
-| `event.cpp` | 事件订阅表与派发 |
-| `ledger.cpp` | 效应账本：每次改变宿主状态的动作登记一条，停用时倒序撤销 |
-| `sidecar_proto.cpp` | 侧车协议：一行一个 JSON 对象 |
-| `admin_server.cpp` | 管理端口服务端：回环监听、首帧认证、帧转发到 kernel.* |
-| `admin_client.cpp` | 管理端口客户端：找端口、认证、发帧读帧 |
-| `ui_server.cpp` | 界面 HTTP 服务端（core-ui 用）：回环监听、口令认证、/api/* 转管理端口 |
-| `log.cpp` | 内核日志：stderr + `<数据根>/logs/kernel-*.log` |
-| `version.cpp` | 版本信息（编译期常量） |
+| `kernel/kernel.cpp` | 内核骨架：装载表、路由表、装载/卸载 |
+| `kernel/gate.cpp` | 能力门禁：注册方法时校验「能力 ⊆ 清单声明」 |
+| `kernel/router.cpp` | 方法路由表：插件间调用转发 |
+| `kernel/event.cpp` | 事件订阅表与派发 |
+| `kernel/depgraph.cpp` | 依赖图与调和计算的纯函数部分 |
+| `kernel/manifest.cpp` | 插件清单解析与校验 |
+| `kernel/ledger.cpp` | 效应账本：每次改变宿主状态的动作登记一条，停用时倒序撤销 |
+| `kernel/log.cpp` | 内核日志：stderr + `<数据根>/logs/kernel-*.log` |
+| `kernel/version.cpp` | 版本信息（编译期常量） |
+| `channel/admin_server.cpp` | 管理端口服务端：回环监听、首帧认证、帧转发到 kernel.* |
+| `channel/admin_client.cpp` | 管理端口客户端：找端口、认证、发帧读帧 |
+| `channel/sidecar_proto.cpp` | 侧车协议：一行一个 JSON 对象 |
+
+界面 HTTP 服务端 `ui_server.cpp` 不属于内核，已归入 `main/builtin-plugins/core-ui/`（它是 core-ui 插件的一部分）。侧车进程的装载实现在 `Sys/`（按平台拆分）。
 
 `main/` 目录下的每个文件做什么，见 [`main/README.md`](main/README.md)（比这里更细）。
 

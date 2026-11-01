@@ -10,7 +10,7 @@
 #include <memory>
 #include <string>
 
-#include "ling/ui_server.hpp"
+#include "ui_server.hpp"
 
 namespace ling {
 
