@@ -1,6 +1,6 @@
 // Windows 平台实现。对应 main/include/ling/sys.hpp 的接口声明。
 //
-// 这一份只在 Windows 上编译（CMake 里 WIN32 分支才把 main/Sys/Windows 加进源列表）。
+// 这一份只在 Windows 上编译（CMake 里 WIN32 分支才把 main/sys/Windows 加进源列表）。
 // 每个函数头上不重复写「Windows 版」——整个文件都是 Windows 版。
 #include "ling/sys.hpp"
 
@@ -177,6 +177,8 @@ bool socket_would_block() {
 int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
     (void)max_fd;  // Windows 忽略 nfds
     // EINTR（被信号打断）时重试，直到超时或非 EINTR 错误；调用方只看到「就绪/超时/真错误」。
+    // select 失败时 fd_set 内容未指定，重试前从副本还原，避免把「就绪」误判成「超时」。
+    const fd_set original = *readfds;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (true) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -184,6 +186,7 @@ int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
         timeval timeout{};
         timeout.tv_sec = static_cast<long>(left.count() / 1000);
         timeout.tv_usec = static_cast<long>((left.count() % 1000) * 1000);
+        *readfds = original;  // 还原，见上：被打断后 fd_set 不可信
         const int ready = ::select(0, readfds, nullptr, nullptr, &timeout);
         if (ready != SOCKET_ERROR || ::WSAGetLastError() != WSAEINTR) {
             return ready;

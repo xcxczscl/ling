@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 # 版本号见 docs/common/02-版本号与兼容约定.md §2：
 #   大版本.首要版本.次版本-b<构建序号>
 # bN 是打包轮次，每次构建产物递增；功能变化才动次版本。
-# 0.0.3 对应 M2（可装可卸），也就是 MVP 的交付版本（11-MVP 范围.md §1.1）。
+# 0.1.0 对应 M6（可发布），是当前里程碑的交付版本（10-路线图与里程碑.md §3.7）。
 set(LING_VERSION_MAJOR 0)
 set(LING_VERSION_MINOR 1)
 set(LING_VERSION_PATCH 0)

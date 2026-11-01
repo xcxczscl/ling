@@ -8,15 +8,15 @@
 add_library(ling_plugin_api INTERFACE)
 target_include_directories(ling_plugin_api INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# 平台抽象层：纯平台函数（Sys/Windows/sys.cpp 或 Sys/Posix/sys.cpp）。
+# 平台抽象层：纯平台函数（sys/Windows/sys.cpp 或 sys/Posix/sys.cpp）。
 # 宿主内核（ling_core）与进程内插件都要链接它——插件是独立 DLL，不链 ling_core，
 # 但也要用 local_time、atomic_replace 这类平台能力，所以单独成一个库。
 add_library(ling_sys STATIC)
 if(WIN32)
-    target_sources(ling_sys PRIVATE Sys/Windows/sys.cpp)
+    target_sources(ling_sys PRIVATE sys/Windows/sys.cpp)
     target_link_libraries(ling_sys PUBLIC ws2_32)  # Winsock 初始化（WSAStartup）在 sys.cpp
 else()
-    target_sources(ling_sys PRIVATE Sys/Posix/sys.cpp)
+    target_sources(ling_sys PRIVATE sys/Posix/sys.cpp)
     # dlopen/dlsym/dlclose 在较老的 glibc（< 2.34）上要显式链 -ldl。
     target_link_libraries(ling_sys PUBLIC ${CMAKE_DL_LIBS})
 endif()
@@ -27,7 +27,7 @@ ling_set_hardening(ling_sys)
 ling_set_sanitizer(ling_sys)
 
 # 内核层（src/kernel/）：四项服务 + 三个机制，见 docs/ling/03-架构设计.md §2.1。
-# 通道层（src/channel/）：管理端口 + 侧车协议。平台相关的装载通道实现在 Sys/。
+# 通道层（src/channel/）：管理端口 + 侧车协议。平台相关的装载通道实现在 sys/。
 add_library(ling_core STATIC
     src/kernel/version.cpp
     src/kernel/manifest.cpp
@@ -45,9 +45,9 @@ add_library(ling_core STATIC
 
 # sidecar_host 的进程实现（Sidecar 类）是宿主内核的一部分，按平台只编一份。
 if(WIN32)
-    target_sources(ling_core PRIVATE Sys/Windows/sidecar_host.cpp)
+    target_sources(ling_core PRIVATE sys/Windows/sidecar_host.cpp)
 else()
-    target_sources(ling_core PRIVATE Sys/Posix/sidecar_host.cpp)
+    target_sources(ling_core PRIVATE sys/Posix/sidecar_host.cpp)
 endif()
 
 target_include_directories(ling_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

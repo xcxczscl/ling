@@ -300,6 +300,7 @@ int exit_code_of(const ling::AdminReply& reply) {
             return 0;
         case ling::AdminReply::Kind::kUnreachable:
             return 3;
+        case ling::AdminReply::Kind::kTimeout:
         case ling::AdminReply::Kind::kAuth:
         case ling::AdminReply::Kind::kRemote:
         case ling::AdminReply::Kind::kProtocol:

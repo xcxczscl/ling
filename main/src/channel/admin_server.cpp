@@ -226,6 +226,11 @@ std::string AdminServer::start(std::uint16_t start_port, std::uint16_t last_port
     session["token"] = impl_->token;
     std::ofstream output(session_path, std::ios::trunc);
     if (!output) {
+        // 这时端口已经 bind + listen 了，不关会留一个被占用的端口和悬空的句柄。
+        // 进程通常随即退出所以影响小，但不清理是不完整的。
+        sys::close_socket(impl_->listen_fd);
+        impl_->listen_fd = sys::bad_socket();
+        impl_->token.clear();
         return "无法写入 " + session_path.string();
     }
     output << session.dump(2) << "\n";
@@ -276,17 +281,20 @@ bool AdminServer::poll(int timeout_ms) {
     }
 
     for (std::size_t i = 0; i < impl_->conns.size();) {
-        if (!FD_ISSET(impl_->conns[i].fd, &readable)) {
-            // 认证超时：连上 5 秒还没通过认证就断开（04/06 §2.4）。
-            if (!impl_->conns[i].authed) {
-                const auto age = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - impl_->conns[i].opened);
-                if (age.count() >= kAuthTimeoutSeconds) {
-                    log_warn("admin", "连接 5 秒内未认证，断开");
-                    impl_->close_conn(i);
-                    continue;
-                }
+        // 认证超时：连上 5 秒还没通过认证就断开（04/06 §2.4）。
+        // 用「自连接建立起的绝对时长」判定，而不是「本轮有没有数据」——
+        // 否则未认证客户端只要每 <5 秒发一次任意数据，就永远落不进超时分支。
+        if (!impl_->conns[i].authed) {
+            const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - impl_->conns[i].opened);
+            if (age.count() >= kAuthTimeoutSeconds) {
+                log_warn("admin", "连接 5 秒内未认证，断开");
+                impl_->close_conn(i);
+                continue;
             }
+        }
+
+        if (!FD_ISSET(impl_->conns[i].fd, &readable)) {
             ++i;
             continue;
         }

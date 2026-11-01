@@ -1,4 +1,4 @@
-// 内核骨架：装载表 + 路由表 + 装载/卸载。S1 只做进程内轨道，不启用依赖与热更新。
+// 内核骨架：装载表 + 路由表 + 装载/卸载、依赖调和、热更新、侧车调度。
 // 语义依据 docs/ling/04-详细设计/01-内核四服务.md 与 02-插件装载与接口.md。
 #pragma once
 
@@ -244,7 +244,7 @@ private:
     ling_host_api host_api_{};
 };
 
-// 供 plugin_host.cpp 使用的内部函数。
+// 供内核内部使用的宿主版本串（编进 ling_core，不对外）。
 std::string host_version_string();
 
 }  // namespace ling

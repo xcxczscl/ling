@@ -606,9 +606,6 @@ void Kernel::watch_tick() {
     reconcile();
 }
 
-// 单独一段：收侧车的帧、处理「2 秒后重启」。
-// 放在主循环里而不是线程里，理由与 kernel.tick 相同——宿主是单线程内核。
-
 std::string Kernel::doctor_report() {
     // 四项检查，只报告不修复（LING-REQ-076）。每项一行结论加必要的明细，
     // 全部在核心里算，不调任何插件方法——被修的插件不能是诊断的依据。
@@ -1645,6 +1642,9 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
         return true;  // 停用流程在等它，这里不做事
     }
 
+    // 走到这说明 op 不在侧车合法集合里。侧车协议里 op 是封闭枚举，未知值要么是
+    // 版本不匹配、要么是坏帧，记一条 warn 方便排查，不静默吞掉。
+    log_warn("sidecar", plugin.manifest.id + " 发来未知 op：" + frame.op);
     return true;
 }
 

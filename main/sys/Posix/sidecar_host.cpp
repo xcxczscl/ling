@@ -25,6 +25,10 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
                            const std::filesystem::path& working_dir, const std::string& plugin_id,
                            const std::string& token, const std::string& data_dir,
                            const std::string& sdk_dir) {
+    // POSIX 的文件描述符用 -1 作「无效」哨兵（fd 0 是合法的，比如宿主关了 stdin 时
+    // pipe 就会拿到 0）。Windows 用 nullptr（0）作哨兵，两边语义不同，各写各的。
+    stdin_write_ = -1;
+    stdout_read_ = -1;
     int in_pipe[2] = {-1, -1};
     int out_pipe[2] = {-1, -1};
     if (::pipe(in_pipe) != 0) {
@@ -79,7 +83,7 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
 }
 
 bool Sidecar::send(const sidecar::Frame& frame, std::string* error) {
-    if (stdin_write_ == 0) {
+    if (stdin_write_ < 0) {
         *error = "侧车已经不在运行";
         return false;
     }
@@ -113,7 +117,7 @@ bool Sidecar::read(sidecar::Frame* out, int timeout_ms, bool* closed, std::strin
             }
             return sidecar::parse(line, out, error);
         }
-        if (stdout_read_ == 0) {
+        if (stdout_read_ < 0) {
             *closed = true;
             return false;
         }
@@ -215,13 +219,13 @@ void Sidecar::terminate(int wait_ms) {
 }
 
 void Sidecar::close_handles() {
-    if (stdin_write_ != 0) {
+    if (stdin_write_ >= 0) {
         ::close(static_cast<int>(stdin_write_));
-        stdin_write_ = 0;
+        stdin_write_ = -1;
     }
-    if (stdout_read_ != 0) {
+    if (stdout_read_ >= 0) {
         ::close(static_cast<int>(stdout_read_));
-        stdout_read_ = 0;
+        stdout_read_ = -1;
     }
 }
 

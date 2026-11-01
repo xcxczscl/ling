@@ -5,7 +5,7 @@
 // 打开文件、共享库后缀。业务代码（kernel、admin、ui_server、app、core-ui）只 include
 // 本头文件，不再自己写 #ifdef _WIN32，也不再直接 include windows.h / sys/socket.h。
 //
-// 实现按平台拆成两份：main/Sys/Windows/sys.cpp 与 main/Sys/Posix/sys.cpp，构建时
+// 实现按平台拆成两份：main/sys/Windows/sys.cpp 与 main/sys/Posix/sys.cpp，构建时
 // 由 CMake 按平台只编其中一份（见 main/CMakeLists.txt）。
 //
 // 为什么单独一层：同一个动作在两个平台的系统调用不一样（动态库是 LoadLibrary 对

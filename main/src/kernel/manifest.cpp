@@ -41,7 +41,7 @@ bool is_supported_api(const std::string& api) {
 
 bool has_leading_core(const std::string& id) { return id.rfind("core-", 0) == 0; }
 
-// 内置插件清单。MVP 只有三个，core-ui 与 core-job 待 M5 加回（11 §4.2 第三条）。
+// 五个内置插件，随宿主分发、默认预装、可卸载（04/07）。
 constexpr const char* kBuiltinIds[] = {"core-settings", "core-plugin-manager", "core-log",
                                        "core-job", "core-ui"};
 
@@ -237,7 +237,7 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
     // 第 5 步：api 兼容。
     if (!is_supported_api(manifest.api)) {
         result.code = err::kApiMismatch;
-        result.detail = "宿主支持 api 1，清单声明 " + manifest.api;
+        result.detail = "宿主支持 api 1 与 0，清单声明 " + manifest.api;
         return result;
     }
 

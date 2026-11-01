@@ -1,6 +1,6 @@
 // POSIX（Linux 等 Unix 系）平台实现。对应 main/include/ling/sys.hpp 的接口声明。
 //
-// 这一份只在非 Windows 上编译（CMake 里 else 分支把 main/Sys/Posix 加进源列表）。
+// 这一份只在非 Windows 上编译（CMake 里 else 分支把 main/sys/Posix 加进源列表）。
 // 注意：从 S0 起只在 Windows 上编过，这份代码第一次上 Linux 要重新编译并跑回归。
 #include "ling/sys.hpp"
 
@@ -122,6 +122,9 @@ bool socket_would_block() { return errno == EAGAIN || errno == EWOULDBLOCK; }
 int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
     // EINTR（被信号打断，如 Ctrl+C）时重试，直到超时或非 EINTR 错误；
     // 调用方只看到「就绪/超时/真错误」，不必自己处理信号打断。
+    // select 失败时 fd_set 内容未指定（Linux 被信号打断可能已把它清空），
+    // 所以重试前必须从副本还原，否则会把「有连接就绪」误判成「超时」。
+    const fd_set original = *readfds;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (true) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -129,6 +132,7 @@ int socket_select(socket_handle max_fd, fd_set* readfds, int timeout_ms) {
         timeval timeout{};
         timeout.tv_sec = static_cast<long>(left.count() / 1000);
         timeout.tv_usec = static_cast<long>((left.count() % 1000) * 1000);
+        *readfds = original;  // 还原，见上：被打断后 fd_set 不可信
         const int ready = ::select(max_fd + 1, readfds, nullptr, nullptr, &timeout);
         if (ready >= 0 || errno != EINTR) {
             return ready;

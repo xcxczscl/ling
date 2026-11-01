@@ -39,10 +39,15 @@ std::string read_line(sys::socket_handle fd, bool* timed_out = nullptr) {
     char chunk[4096];
     for (;;) {
         const int received = ::recv(fd, chunk, sizeof(chunk), 0);
-        if (received <= 0) {
+        if (received < 0) {
+            // 出错：只有「超时/被阻塞」才归为超时；其余是连接错误。
             if (timed_out != nullptr && sys::socket_would_block()) {
                 *timed_out = true;
             }
+            return {};
+        }
+        if (received == 0) {
+            // 对端正常关闭。errno 此时未定义，不能读它判断超时，直接按断开处理。
             return {};
         }
         buffer.append(chunk, static_cast<std::size_t>(received));

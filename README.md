@@ -35,7 +35,7 @@ M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「�
 |---|---|---|
 | ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
 | 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
-| 侧车轨道（`main/Sys/` + `src/sidecar_proto.cpp`） | 已定稿（04/02 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
+| 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（04/02 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
 | Python SDK（`main/SDK/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
 | 界面（`main/builtin-plugins/core-ui/`） | 已定稿（`builtin-plugins/core-ui/`） | `core-ui`：第五个内置插件；`webui`（浏览器）与 `desktop`（WebView2 窗口）两种形态 |
 | 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench`、`demo-b`；侧车示例 `demo-sidecar`（C++）、`demo-py`（Python） |
@@ -58,7 +58,7 @@ python tests/acceptance/acceptance.py --script all --preset win-release
 python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版）
 ```
 
-界面是 `core-ui`（第五个内置插件），`ling serve` 启动时自动拉起：desktop 版弹 WebView2 窗口，webui 版用 `ling open` 在浏览器里打开。机器上没有 WebView2 运行时（非 Win10/11）时自动退化成浏览器。
+界面是 `core-ui`（第五个内置插件），`ling serve` 启动时自动拉起，`ling open` 在浏览器里打开。默认是 `webui` 形态；`desktop` 形态（WebView2 窗口）可选编译（`LING_CORE_UI_DESKTOP=ON`）。
 
 技术栈（见 [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，core-ui 用 C++ 写成侧车。
 
@@ -91,16 +91,16 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | `main/app/main.cpp` | 命令行入口：serve、install、uninstall、plugins、logs、job、open、doctor、reload、restart、shutdown 等全部子命令 |
 | `main/src/` | 内核实现，编成静态库 `ling_core`，按内核层 / 通道层分两个子目录（见下表） |
 | `main/include/ling/` | 对外头文件；插件边界只认 `plugin_api.h`，其余是宿主内部契约 |
-| `main/Sys/` | 平台抽象层：Windows 与 POSIX 各一份实现，业务代码只 include `ling/sys.hpp` |
+| `main/sys/` | 平台抽象层：Windows 与 POSIX 各一份实现，业务代码只 include `ling/sys.hpp` |
 | `main/SDK/python/` | Python 侧车 SDK（ling_sidecar.py），随宿主分发 |
 | `main/builtin-plugins/` | 五个内置插件：core-settings、core-plugin-manager、core-log、core-job、core-ui，每个有自己的 CMakeLists.txt |
 
-`main/Sys/` 是平台抽象层：所有「和操作系统打交道」的动作（取可执行文件目录、读环境变量、动态库加载、套接字、起子进程、控制台、打开浏览器）都收口在这里，业务代码不再写 `#ifdef _WIN32`。
+`main/sys/` 是平台抽象层：所有「和操作系统打交道」的动作（取可执行文件目录、读环境变量、动态库加载、套接字、起子进程、控制台、打开浏览器）都收口在这里，业务代码不再写 `#ifdef _WIN32`。
 
 | 位置 | 作用 |
 |---|---|
-| `Sys/Windows/` | Windows 实现：`sys.cpp` 平台函数 + `sidecar_host.cpp` 侧车进程 |
-| `Sys/Posix/` | POSIX（Linux 等）实现，同名文件（还没在 Linux 上编过） |
+| `sys/Windows/` | Windows 实现：`sys.cpp` 平台函数 + `sidecar_host.cpp` 侧车进程 |
+| `sys/Posix/` | POSIX（Linux 等）实现，同名文件（还没在 Linux 上编过） |
 
 `main/src/` 按内核层 / 通道层分两个子目录（对应 `docs/ling/03-架构设计.md` §2.1 的分层）：
 
@@ -119,7 +119,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | `channel/admin_client.cpp` | 管理端口客户端：找端口、认证、发帧读帧 |
 | `channel/sidecar_proto.cpp` | 侧车协议：一行一个 JSON 对象 |
 
-界面 HTTP 服务端 `ui_server.cpp` 不属于内核，已归入 `main/builtin-plugins/core-ui/`（它是 core-ui 插件的一部分）。侧车进程的装载实现在 `Sys/`（按平台拆分）。
+界面 HTTP 服务端 `ui_server.cpp` 不属于内核，已归入 `main/builtin-plugins/core-ui/`（它是 core-ui 插件的一部分）。侧车进程的装载实现在 `sys/`（按平台拆分）。
 
 `main/` 目录下的每个文件做什么，见 [`main/README.md`](main/README.md)（比这里更细）。
 

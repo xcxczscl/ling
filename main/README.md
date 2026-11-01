@@ -9,7 +9,7 @@
 | `app/` | 命令行入口（`ling.exe`），只有 `main.cpp` 一个文件 |
 | `src/` | 内核实现，编成静态库 `ling_core`，按内核层 / 通道层分两个子目录 |
 | `include/ling/` | 对外头文件；插件边界只认 `plugin_api.h` |
-| `Sys/` | 平台抽象层：Windows 与 POSIX 各一份实现 |
+| `sys/` | 平台抽象层：Windows 与 POSIX 各一份实现 |
 | `SDK/python/` | Python 侧车 SDK（`ling_sidecar.py`） |
 | `builtin-plugins/` | 五个内置插件（含 `core-ui`），每个插件有自己的 `CMakeLists.txt` |
 | `CMakeLists.txt` | 本目录的构建脚本（内核、平台层、命令行入口） |
@@ -22,7 +22,7 @@
 
 ## src/ —— 内核实现（静态库 ling_core）
 
-按 `docs/ling/03-架构设计.md` §2.1 的「内核层 / 通道层」分两个子目录。平台相关的系统调用不在这里，在 `Sys/`。
+按 `docs/ling/03-架构设计.md` §2.1 的「内核层 / 通道层」分两个子目录。平台相关的系统调用不在这里，在 `sys/`。
 
 ### kernel/ —— 内核层（四项服务 + 三个机制）
 
@@ -46,7 +46,7 @@
 | `admin_client.cpp` | 管理端口客户端：命令行用，找端口、认证、发帧读帧 |
 | `sidecar_proto.cpp` | 侧车协议：一行一个 JSON 对象（jsonl） |
 
-装载通道的进程实现（`sidecar_host.cpp`）是平台相关的，在 `Sys/` 按平台拆分，声明在 `include/ling/sidecar_host.hpp`。
+装载通道的进程实现（`sidecar_host.cpp`）是平台相关的，在 `sys/` 按平台拆分，声明在 `include/ling/sidecar_host.hpp`。
 
 ## include/ling/ —— 对外头文件
 
@@ -60,7 +60,7 @@
 | `depgraph.hpp` | 依赖图 |
 | `manifest.hpp` | 清单 |
 | `ledger.hpp` | 账本 |
-| `sidecar_host.hpp` | 侧车进程（声明，实现在 `Sys/`） |
+| `sidecar_host.hpp` | 侧车进程（声明，实现在 `sys/`） |
 | `sidecar_proto.hpp` | 侧车协议 |
 | `admin.hpp` | 管理端口 |
 | `log.hpp` | 日志 |
@@ -68,7 +68,7 @@
 | `version.hpp` | 版本 |
 | `sys.hpp` | 平台抽象层统一接口 |
 
-## Sys/ —— 平台抽象层
+## sys/ —— 平台抽象层
 
 所有「和操作系统打交道」的动作都收口在这里，业务代码只 include `ling/sys.hpp`，不写 `#ifdef _WIN32`。
 
