@@ -32,12 +32,4 @@ inline constexpr const char* kCancelled = "E_CANCELLED";
 inline constexpr const char* kResidentLimit = "E_RESIDENT_LIMIT";
 }  // namespace err
 
-// 能力位集，与 04/02 §4.4 的 requires_mask 一致。
-enum CapabilityMask : unsigned {
-    kCapFs = 1u,
-    kCapNetwork = 2u,
-    kCapUi = 4u,
-    kCapShell = 8u,
-};
-
 }  // namespace ling

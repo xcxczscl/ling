@@ -15,6 +15,7 @@
 
 #include "ling/depgraph.hpp"
 #include "ling/errors.hpp"
+#include "ling/gate.hpp"
 #include "ling/log.hpp"
 #include "ling/sys.hpp"
 #include "ling/version.hpp"
@@ -148,22 +149,6 @@ const char* state_name(PluginState state) {
             return "failed";
     }
     return "installed";
-}
-
-std::uint32_t capability_mask_of(const Manifest& manifest) {
-    std::uint32_t mask = 0;
-    for (const auto& capability : manifest.capabilities) {
-        if (capability == "fs") {
-            mask |= kCapFs;
-        } else if (capability == "network") {
-            mask |= kCapNetwork;
-        } else if (capability == "ui") {
-            mask |= kCapUi;
-        } else if (capability == "shell") {
-            mask |= kCapShell;
-        }
-    }
-    return mask;
 }
 
 std::string host_version_string() { return version_string(); }
@@ -2009,9 +1994,9 @@ std::string Kernel::on_register(PluginContext* ctx, const std::string& name, voi
     if (plugin == nullptr || plugin->state != PluginState::kActivated) {
         return err::kPluginMissing;
     }
-    // 第 5 条：方法声明的能力必须是清单的子集。
+    // 第 5 条：方法声明的能力必须是清单的子集（能力门禁，见 gate.hpp）。
     const std::uint32_t declared = capability_mask_of(plugin->manifest);
-    if ((requires_mask & ~declared) != 0) {
+    if (!capability_allowed(requires_mask, declared)) {
         return err::kCapabilityDenied;
     }
     const std::string code = router_.register_method(ctx->plugin_id, name, fn, ctx, requires_mask);

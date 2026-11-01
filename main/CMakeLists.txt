@@ -30,6 +30,7 @@ add_library(ling_core STATIC
     src/version.cpp
     src/manifest.cpp
     src/depgraph.cpp
+    src/gate.cpp
     src/sidecar_proto.cpp
     src/router.cpp
     src/ledger.cpp

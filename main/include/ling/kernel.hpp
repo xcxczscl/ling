@@ -245,7 +245,6 @@ private:
 };
 
 // 供 plugin_host.cpp 使用的内部函数。
-std::uint32_t capability_mask_of(const Manifest& manifest);
 std::string host_version_string();
 
 }  // namespace ling
