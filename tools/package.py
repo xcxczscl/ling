@@ -42,7 +42,7 @@ def crt_dlls():
 
 def version_string(exe):
     out = subprocess.run([str(exe), "--version"], capture_output=True, text=True).stdout.strip()
-    # 形如 "ling 0.1.0-b1"，取后半段。
+    # 形如 "ling 0.1.0"，取后半段。
     return out.split()[-1] if out else "0.0.0"
 
 

@@ -2,14 +2,12 @@ cmake_minimum_required(VERSION 3.25)
 
 # 版本号见 docs/common/02-版本号与兼容约定.md §2：
 #   大版本.首要版本.次版本-b<构建序号>
-# bN 是打包轮次，每次构建产物递增；功能变化才动次版本。
-# 0.1.0 对应 M6（可发布），是当前里程碑的交付版本（10-路线图与里程碑.md §3.7）。
+# 开发期用 bN 标记构建轮次；项目宣告完成后去掉 -bN 成为正式版。
+# 0.1.0 是正式版（M6 已通过、项目宣告完成，10-路线图与里程碑.md §3.7、§4）。
 set(LING_VERSION_MAJOR 0)
 set(LING_VERSION_MINOR 1)
 set(LING_VERSION_PATCH 0)
-set(LING_BUILD 1)
-set(LING_VERSION
-    "${LING_VERSION_MAJOR}.${LING_VERSION_MINOR}.${LING_VERSION_PATCH}-b${LING_BUILD}")
+set(LING_VERSION "${LING_VERSION_MAJOR}.${LING_VERSION_MINOR}.${LING_VERSION_PATCH}")
 
 project(ling VERSION ${LING_VERSION_MAJOR}.${LING_VERSION_MINOR}.${LING_VERSION_PATCH}
         DESCRIPTION "插件宿主 + 功能插件" LANGUAGES CXX)
