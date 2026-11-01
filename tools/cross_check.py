@@ -23,7 +23,7 @@ def docs():
         paths.extend(ROOT.glob(pat))
     return sorted(
         p for p in paths
-        if "docs/log" not in p.as_posix() and "docs/archive" not in p.as_posix()
+        if "log" not in p.parts and "archive" not in p.parts
     )
 
 
@@ -53,8 +53,8 @@ def check_port():
 
 
 def check_errcode():
-    """错误码：每个码出现在哪些文档；与 04/02 的登记表比对。"""
-    reg = ROOT / "docs/ling/04-详细设计/02-插件装载与接口.md"
+    """错误码：每个码出现在哪些文档；与 plugin-support/01 的登记表比对。"""
+    reg = ROOT / "docs/ling/plugin-support/01-插件装载与接口.md"
     text = reg.read_text(encoding="utf-8")
     # 登记表是一行一个码，形如 | `E_XXX` | 含义 | ...
     registered = set(re.findall(r"^\| `(E_[A-Z_]+)`", text, re.M))
@@ -66,7 +66,7 @@ def check_errcode():
                 use[code].add(rel(p))
 
     print("== 错误码 ==\n")
-    print(f"  04/02 登记表共 {len(registered)} 个\n")
+    print(f"  plugin-support/01 登记表共 {len(registered)} 个\n")
     extra = sorted(set(use) - registered)
     if extra:
         print("  【登记表里没有，但别处在用】")
@@ -75,11 +75,11 @@ def check_errcode():
         print()
     unused = sorted(registered - set(use))
     if unused:
-        print("  【登记了但除 04/02 外没人用】")
+        print("  【登记了但除 plugin-support/01 外没人用】")
         for c in unused:
             print(f"    {c}")
         print()
-    print("  每个码被引用的文档数（2 个以上属正常：01 附录 + 04/02）")
+    print("  每个码被引用的文档数（2 个以上属正常：01 附录 + plugin-support/01）")
     for c in sorted(use, key=lambda x: (-len(use[x]), x)):
         print(f"    {c:<26} {len(use[c])} 处")
     print()

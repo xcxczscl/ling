@@ -27,15 +27,15 @@ ling 是一个插件宿主程序。它自己不实现任何业务功能，只提
 
 ## 现在到哪一步
 
-**M0 至 M6 已全部通过，项目宣告完成，正式版 `0.1.0`**（设计定稿、最小闭环、可装可卸、能改能换、双轨、可发布）。各段的判定记录见 [`docs/log/`](docs/log/)，里程碑划分见 [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md)。
+**M0 至 M6 已全部通过，项目宣告完成，正式版 `0.1.0`**（设计定稿、最小闭环、可装可卸、能改能换、双轨、可发布）。各段的判定记录见 [`docs/ling/log/`](docs/ling/log/)，里程碑划分见 [`docs/ling/main/10-路线图与里程碑.md`](docs/ling/main/10-路线图与里程碑.md)。
 
 M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「侧车」。侧车支持 C++ 与 Python 两种运行时、崩溃重启、按需启停。Windows 上验收 32 项全过；**Linux 那半边代码写了但没在 Linux 上编译过**，第一次上 Linux 要重编并跑一遍同一份验收脚本。
 
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
 | ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
-| 内置插件（`main/builtin-plugins/`） | 已定稿（04/07） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
-| 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（04/02 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
+| 内置插件（`main/builtin-plugins/`） | 已定稿（builtin-plugins/00） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
+| 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（plugin-support/01 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
 | Python SDK（`main/SDK/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
 | 界面（`main/builtin-plugins/core-ui/`） | 已定稿（`builtin-plugins/core-ui/`） | `core-ui`：第五个内置插件；`webui`（浏览器）与 `desktop`（WebView2 窗口）两种形态 |
 | 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench`、`demo-b`；侧车示例 `demo-sidecar`（C++）、`demo-py`（Python） |
@@ -60,7 +60,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 界面是 `core-ui`（第五个内置插件），`ling serve` 启动时自动拉起，`ling open` 在浏览器里打开。默认是 `webui` 形态；`desktop` 形态（WebView2 窗口）可选编译（`LING_CORE_UI_DESKTOP=ON`）。
 
-技术栈（见 [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，core-ui 用 C++ 写成侧车。
+技术栈（见 [`docs/ling/main/02-技术选型.md`](docs/ling/main/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，core-ui 用 C++ 写成侧车。
 
 改文档的规矩见 [`AGENTS.md`](AGENTS.md)：需求到设计到测试的引用一律写完整路径，改完跑 `tools/` 下三个校验脚本。
 
@@ -102,7 +102,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | `sys/Windows/` | Windows 实现：`sys.cpp` 平台函数 + `sidecar_host.cpp` 侧车进程 |
 | `sys/Posix/` | POSIX（Linux 等）实现，同名文件（还没在 Linux 上编过） |
 
-`main/src/` 按内核层 / 通道层分两个子目录（对应 `docs/ling/03-架构设计.md` §2.1 的分层）：
+`main/src/` 按内核层 / 通道层分两个子目录（对应 `docs/ling/main/03-架构设计.md` §2.1 的分层）：
 
 | 文件 | 作用 |
 |---|---|
@@ -189,19 +189,19 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 1. [`docs/common/00-文档编写规范.md`](docs/common/00-文档编写规范.md) — 文档怎么组织、怎么评审
 2. [`docs/common/01-术语表.md`](docs/common/01-术语表.md) — 统一名词，含项目代号 LING / RM / PLR
-3. [`docs/ling/00-总览与术语.md`](docs/ling/00-总览与术语.md) — ling 是什么、边界在哪、专属名词什么意思
-4. [`docs/ling/01-需求规格.md`](docs/ling/01-需求规格.md) — 宿主必须做到什么，共 127 条
-5. [`docs/ling/02-技术选型.md`](docs/ling/02-技术选型.md) — 用什么语言、插件怎么装、为什么这么选
-6. [`docs/ling/03-架构设计.md`](docs/ling/03-架构设计.md) — 分成哪几块、状态放哪、谁改谁读
-7. `docs/ling/04-详细设计/` — 七份实现级设计：
-   [01 内核四服务](docs/ling/04-详细设计/01-内核四服务.md) · [02 插件装载与接口](docs/ling/04-详细设计/02-插件装载与接口.md) · [03 上下文与效应账本](docs/ling/04-详细设计/03-上下文与效应账本.md) · [04 依赖解析与调和](docs/ling/04-详细设计/04-依赖解析与调和.md) · [05 热更新](docs/ling/04-详细设计/05-热更新.md) · [06 管理端口与命令行](docs/ling/04-详细设计/06-管理端口与命令行.md) · [07 内置插件](docs/ling/04-详细设计/07-内置插件.md)
-8. [`docs/ling/05-构造与开发指南.md`](docs/ling/05-构造与开发指南.md) — 代码写在哪、按什么顺序写、怎么编怎么跑
-9. [`docs/ling/06-安全设计.md`](docs/ling/06-安全设计.md) — 防什么、不防什么、能力门禁到底是什么
-10. [`docs/ling/07-测试与验收.md`](docs/ling/07-测试与验收.md) — 测什么、怎么测、什么算通过
-11. [`docs/ling/08-部署与发布.md`](docs/ling/08-部署与发布.md) — 怎么打包、怎么装、怎么升级回滚
-12. [`docs/ling/09-运行时预案.md`](docs/ling/09-运行时预案.md) — 出问题了怎么办：判据、自动动作、人该做什么
-13. [`docs/ling/10-路线图与里程碑.md`](docs/ling/10-路线图与里程碑.md) — 分几段走、每段能演示什么
-14. [`docs/ling/11-MVP 范围.md`](docs/ling/11-MVP%20范围.md) — 最早可用版本包含哪 85 条需求、不含哪 42 条
+3. [`docs/ling/main/00-总览与术语.md`](docs/ling/main/00-总览与术语.md) — ling 是什么、边界在哪、专属名词什么意思
+4. [`docs/ling/main/01-需求规格.md`](docs/ling/main/01-需求规格.md) — 宿主必须做到什么，共 127 条
+5. [`docs/ling/main/02-技术选型.md`](docs/ling/main/02-技术选型.md) — 用什么语言、插件怎么装、为什么这么选
+6. [`docs/ling/main/03-架构设计.md`](docs/ling/main/03-架构设计.md) — 分成哪几块、状态放哪、谁改谁读
+7. `docs/ling/main/04-详细设计/` — 七份实现级设计：
+   [01 内核四服务](docs/ling/main/04-详细设计/01-内核四服务.md) · [02 插件装载与接口](docs/ling/plugin-support/01-插件装载与接口.md) · [03 上下文与效应账本](docs/ling/plugin-support/02-上下文与效应账本.md) · [04 依赖解析与调和](docs/ling/main/04-详细设计/02-依赖解析与调和.md) · [05 热更新](docs/ling/main/04-详细设计/03-热更新.md) · [06 管理端口与命令行](docs/ling/main/04-详细设计/04-管理端口与命令行.md) · [07 内置插件](docs/ling/builtin-plugins/00-内置插件总览.md)
+8. [`docs/ling/main/05-构造与开发指南.md`](docs/ling/main/05-构造与开发指南.md) — 代码写在哪、按什么顺序写、怎么编怎么跑
+9. [`docs/ling/main/06-安全设计.md`](docs/ling/main/06-安全设计.md) — 防什么、不防什么、能力门禁到底是什么
+10. [`docs/ling/main/07-测试与验收.md`](docs/ling/main/07-测试与验收.md) — 测什么、怎么测、什么算通过
+11. [`docs/ling/main/08-部署与发布.md`](docs/ling/main/08-部署与发布.md) — 怎么打包、怎么装、怎么升级回滚
+12. [`docs/ling/main/09-运行时预案.md`](docs/ling/main/09-运行时预案.md) — 出问题了怎么办：判据、自动动作、人该做什么
+13. [`docs/ling/main/10-路线图与里程碑.md`](docs/ling/main/10-路线图与里程碑.md) — 分几段走、每段能演示什么
+14. [`docs/ling/main/11-MVP 范围.md`](docs/ling/main/11-MVP%20范围.md) — 最早可用版本包含哪 85 条需求、不含哪 42 条
 15. 后续按序号推进
 
 每份正式文档都有详细版和简要版，简要版在 `brief/` 子目录，结构和详细版一一对应。赶时间读简要版，要理由读详细版。

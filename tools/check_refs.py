@@ -36,14 +36,14 @@ HEAD = re.compile(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\.?\s+(.*)$")
 TOKENS = [
     # 完整路径：允许带空格（如 `11-MVP 范围.md`），允许不在反引号内
     ("full",   re.compile(r"`?(docs/[^`\n]*?\.md)`?")),
-    # 简称带标题，如 `04/01 内核四服务` §6.3
-    ("shortq", re.compile(r"`(0\d/0[1-9]|0\d|1[0-2])[^`§]*?`(?=\s*§)")),
-    # 简称恰好占满反引号，如 `04/02` §5.2
-    ("shortq", re.compile(r"`(0\d/0[1-9]|0\d|1[0-2])`")),
+    # 简称带标题，如 `04/01 内核四服务` §6.3、`plugin-support/01 插件装载` §3
+    ("shortq", re.compile(r"`((?:plugin-support|builtin-plugins)/\d+|0\d/0[1-9]|0\d|1[0-2])[^`§]*?`(?=\s*§)")),
+    # 简称恰好占满反引号，如 `04/02` §5.2、`plugin-support/01` §3
+    ("shortq", re.compile(r"`((?:plugin-support|builtin-plugins)/\d+|0\d/0[1-9]|0\d|1[0-2])`")),
     # 「本文」必须紧跟章节号，否则不算指代
     ("self",   re.compile(r"本文\s*(?=§)")),
-    # 裸写简称，如 06 §3.6、01 需求 §3.6
-    ("shortb", re.compile(r"(?<![\w`/])(0\d/0[1-9]|0\d|1[0-2])(?:\s*需求)?(?=\s*§)")),
+    # 裸写简称，如 06 §3.6、01 需求 §3.6、plugin-support/01 §3
+    ("shortb", re.compile(r"(?<![\w`/])((?:plugin-support|builtin-plugins)/\d+|0\d/0[1-9]|0\d|1[0-2])(?:\s*需求)?(?=\s*§)")),
     ("ref",    re.compile(r"§\s*(\d+(?:\.\d+)*)")),
     # 「第 7 节」：只认一级章号
     ("jie",    re.compile(r"第\s*(\d+)\s*节")),
@@ -59,7 +59,7 @@ def docs():
         paths.extend(ROOT.glob(pat))
     return sorted(
         p for p in paths
-        if "docs/log" not in p.as_posix() and "docs/archive" not in p.as_posix()
+        if "log" not in p.parts and "archive" not in p.parts
     )
 
 
@@ -70,9 +70,13 @@ def rel(p):
 def resolve_short(tag):
     if "/" in tag:
         sub, num = tag.split("/")
-        hits = list((ROOT / "docs" / "ling" / f"{sub}-详细设计").glob(f"{num}-*.md"))
+        if sub in ("plugin-support", "builtin-plugins"):
+            base = ROOT / "docs" / "ling" / sub
+        else:
+            base = ROOT / "docs" / "ling" / "main" / f"{sub}-详细设计"
+        hits = list(base.glob(f"{num}-*.md"))
     else:
-        hits = list((ROOT / "docs" / "ling").glob(f"{tag}-*.md"))
+        hits = list((ROOT / "docs" / "ling" / "main").glob(f"{tag}-*.md"))
     return hits[0] if hits else None
 
 
