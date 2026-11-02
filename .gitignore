@@ -29,8 +29,23 @@ desktop.ini
 *.log
 *.tmp
 
-# 本地杂项：学习材料、脚本工具、存档快照（不入版本库）
-other/
+# 本地杂项：学习材料、脚本工具（不入版本库）
+/other/
+
+# 旧版本内容：只作参考，不再新增（不入版本库）
+/old/
+
+# 正式版发行归档（不入版本库）
+/archive/
+
+# 本机环境与工具生成物（不入版本库）
+.vs/
+*.user
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+*.pdb
+*.ilk
 
 # 构建产物与本地依赖
 run/
