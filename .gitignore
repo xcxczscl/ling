@@ -22,6 +22,9 @@ desktop.ini
 # 本地 Agent 工作区状态（如需团队共享 skill 可删掉这行）
 .workbuddy/
 
+# 同步工具临时状态（不入版本库）
+.sync_temp_dir/
+
 # 日志 / 临时文件
 *.log
 *.tmp
