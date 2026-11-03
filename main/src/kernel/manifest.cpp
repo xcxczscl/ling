@@ -177,17 +177,39 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
         return result;
     }
 
-    if (const auto* node = table.get("min_host"); node != nullptr && node->is_string()) {
-        manifest.min_host = node->value<std::string>().value_or("");
+    // 可选字段写了但类型不对，要按 E_MANIFEST_INVALID 报错，不能静默当没写：
+    // 静默兜底会让用户以为限制生效（例如 min_host 写成数字就被当成空，旧宿主也照装）。
+    auto optional_string = [&](const char* key, std::string* out) -> bool {
+        const auto* node = table.get(key);
+        if (node == nullptr) {
+            return true;
+        }
+        if (!node->is_string()) {
+            result.code = err::kManifestInvalid;
+            result.detail = std::string("字段 ") + key + " 必须是字符串";
+            return false;
+        }
+        *out = node->value<std::string>().value_or("");
+        return true;
+    };
+
+    if (!optional_string("min_host", &manifest.min_host) ||
+        !optional_string("description", &manifest.description)) {
+        return result;
     }
-    if (const auto* node = table.get("description"); node != nullptr && node->is_string()) {
-        manifest.description = node->value<std::string>().value_or("");
-    }
-    if (const auto* node = table.get("capabilities"); node != nullptr && node->is_array()) {
+    if (const auto* node = table.get("capabilities"); node != nullptr) {
+        if (!node->is_array()) {
+            result.code = err::kManifestInvalid;
+            result.detail = "字段 capabilities 必须是字符串数组";
+            return result;
+        }
         for (const auto& item : *node->as_array()) {
-            if (item.is_string()) {
-                manifest.capabilities.push_back(item.value<std::string>().value_or(""));
+            if (!item.is_string()) {
+                result.code = err::kManifestInvalid;
+                result.detail = "字段 capabilities 必须是字符串数组";
+                return result;
             }
+            manifest.capabilities.push_back(item.value<std::string>().value_or(""));
         }
     }
     // [ui] 段：只解析，校验放在第 11 步（那时能力表已经读完）。
@@ -208,13 +230,25 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
             manifest.ui.icon = icon->value<std::string>().value_or("");
         }
     }
-    if (const auto* requires = table.get("requires"); requires != nullptr && requires->is_table()) {
-        if (const auto* plugins = requires->as_table()->get("plugins");
-            plugins != nullptr && plugins->is_array()) {
+    if (const auto* requires = table.get("requires"); requires != nullptr) {
+        if (!requires->is_table()) {
+            result.code = err::kManifestInvalid;
+            result.detail = "[requires] 必须是表（[requires] 段）";
+            return result;
+        }
+        if (const auto* plugins = requires->as_table()->get("plugins"); plugins != nullptr) {
+            if (!plugins->is_array()) {
+                result.code = err::kManifestInvalid;
+                result.detail = "requires.plugins 必须是字符串数组";
+                return result;
+            }
             for (const auto& item : *plugins->as_array()) {
-                if (item.is_string()) {
-                    manifest.requires_plugins.push_back(item.value<std::string>().value_or(""));
+                if (!item.is_string()) {
+                    result.code = err::kManifestInvalid;
+                    result.detail = "requires.plugins 必须是字符串数组";
+                    return result;
                 }
+                manifest.requires_plugins.push_back(item.value<std::string>().value_or(""));
             }
         }
     }
@@ -236,9 +270,20 @@ ManifestResult load_manifest(const std::filesystem::path& dir, const std::string
             entry != nullptr && entry->is_string()) {
             manifest.sidecar.entry = entry->value<std::string>().value_or("");
         }
-        if (const auto* idle = sidecar->as_table()->get("idle_timeout");
-            idle != nullptr && idle->is_integer()) {
-            manifest.sidecar.idle_timeout = idle->value<std::int32_t>().value_or(60);
+        if (const auto* idle = sidecar->as_table()->get("idle_timeout"); idle != nullptr) {
+            if (!idle->is_integer()) {
+                result.code = err::kManifestInvalid;
+                result.detail = "sidecar.idle_timeout 必须是整数（秒）";
+                return result;
+            }
+            // 取 int64 再夹取：过大的整数直接 value<int32_t>() 会悄悄退回默认值 60。
+            const std::int64_t value = idle->value<std::int64_t>().value_or(-1);
+            if (value < 0 || value > 86400) {
+                result.code = err::kManifestInvalid;
+                result.detail = "sidecar.idle_timeout 必须在 0 至 86400 秒之间";
+                return result;
+            }
+            manifest.sidecar.idle_timeout = static_cast<std::int32_t>(value);
         }
     }
 

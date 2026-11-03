@@ -4,10 +4,12 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ling/errors.hpp"
@@ -68,15 +70,25 @@ std::string error_frame(const nlohmann::json& id, const std::string& code,
     frame["error"]["code"] = code;
     frame["error"]["message"] = message;
     frame["error"]["detail"] = nlohmann::json::object();
-    return frame.dump() + "\n";
+    // 插件给的说明可能带非法 UTF-8 字节；严格模式会在 dump 时抛 type_error，
+    // 整条连接被兜底 catch 断开。这里替换掉坏字节，宁可字面上少几个字符。
+    return frame.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
 }
 
 std::string ok_frame(const nlohmann::json& id, const std::string& result_json) {
-    std::string frame = "{\"v\":1,\"id\":" + (id.is_null() ? std::string("0") : id.dump()) +
-                        ",\"ok\":true,\"result\":";
-    frame += result_json.empty() ? "null" : result_json;
-    frame += "}\n";
-    return frame;
+    nlohmann::json frame;
+    frame["v"] = kProtoVersion;
+    frame["id"] = id.is_null() ? nlohmann::json(0) : id;
+    frame["ok"] = true;
+    if (result_json.empty()) {
+        frame["result"] = nullptr;
+    } else {
+        // result 是内核给的 JSON 文本；解析不出来就按字符串放进去。直接拼字符串
+        // 在结果为纯文本（例如 pong）时会拼出非法帧，整条连接随之断开。
+        auto parsed = nlohmann::json::parse(result_json, nullptr, false);
+        frame["result"] = parsed.is_discarded() ? nlohmann::json(result_json) : std::move(parsed);
+    }
+    return frame.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
 }
 
 }  // namespace
@@ -115,9 +127,17 @@ bool AdminServer::Impl::handle_frame(Conn& conn, const std::string& line) {
     }
 
     const nlohmann::json id = frame.contains("id") ? frame["id"] : nlohmann::json(0);
-    const int version = frame.contains("v") && frame["v"].is_number_integer()
-                            ? frame["v"].get<int>()
-                            : 0;
+    // v 是未认证的外来输入：先取 int64 再比较，3e9 之类不该让 get<int>() 抛异常。
+    std::int64_t version = 0;
+    if (frame.contains("v")) {
+        const auto& node = frame["v"];
+        if (node.is_number_unsigned()) {
+            const std::uint64_t raw = node.get<std::uint64_t>();
+            version = raw > 1000000u ? 1000000 : static_cast<std::int64_t>(raw);
+        } else if (node.is_number_integer()) {
+            version = node.get<std::int64_t>();
+        }
+    }
     if (version != kProtoVersion) {
         send_all(conn.fd, error_frame(id, err::kApiMismatch,
                                      "协议版本 " + std::to_string(version) + " 与宿主 " +
@@ -168,7 +188,19 @@ bool AdminServer::Impl::handle_frame(Conn& conn, const std::string& line) {
         args_json = frame["args"].dump();
     }
 
-    const Kernel::KernelReply reply = kernel->handle_kernel(method, args_json);
+    Kernel::KernelReply reply;
+    try {
+        reply = kernel->handle_kernel(method, args_json);
+    } catch (const std::exception& error) {
+        // 方法处理路径上任何异常都不能穿到 main：回 E_INTERNAL 并留日志。
+        log_error("admin", std::string("处理 ") + method + " 时异常：" + error.what());
+        send_all(conn.fd, error_frame(id, err::kInternal, "宿主内部错误"));
+        return true;
+    } catch (...) {
+        log_error("admin", "处理 " + method + " 时未知异常");
+        send_all(conn.fd, error_frame(id, err::kInternal, "宿主内部错误"));
+        return true;
+    }
     if (!reply.code.empty()) {
         send_all(conn.fd, error_frame(id, reply.code, reply.message));
         return true;
@@ -319,7 +351,20 @@ bool AdminServer::poll(int timeout_ms) {
             const std::string line = impl_->conns[i].buffer.substr(0, newline);
             impl_->conns[i].buffer.erase(0, newline + 1);
             if (!line.empty()) {
-                keep = impl_->handle_frame(impl_->conns[i], line);
+                try {
+                    keep = impl_->handle_frame(impl_->conns[i], line);
+                } catch (const std::exception& error) {
+                    // 兜底：任何解析/处理异常都只断这一条连接，不让它出 poll。
+                    log_error("admin", std::string("处理帧时异常：") + error.what());
+                    send_all(impl_->conns[i].fd,
+                             error_frame(nullptr, err::kInternal, "宿主内部错误"));
+                    keep = false;
+                } catch (...) {
+                    log_error("admin", "处理帧时未知异常");
+                    send_all(impl_->conns[i].fd,
+                             error_frame(nullptr, err::kInternal, "宿主内部错误"));
+                    keep = false;
+                }
             }
             newline = impl_->conns[i].buffer.find('\n');
         }

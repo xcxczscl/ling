@@ -117,7 +117,7 @@ public:
     // 有就等安静 200 毫秒后重算一次。合并窗口见 04/04 §7.2。
     void watch_tick();
 
-    // 通过侧车调用一个方法。宿主侧调用方阻塞等 result；超时按 30 秒。
+    // 通过侧车调用一个方法。宿主侧调用方阻塞等 result；超时按 5 秒。
     // 只给代理函数与内核内部用，不对外暴露成 kernel.* 方法。
     CallOutcome invoke_sidecar(const std::string& plugin_id, const std::string& method,
                                const std::string& args_json);

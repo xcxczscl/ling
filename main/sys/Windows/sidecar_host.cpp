@@ -2,18 +2,43 @@
 //
 // 起子进程用 CreateProcessW + 两根匿名管道，读写用 WriteFile/PeekNamedPipe/ReadFile，
 // 进程状态用 WaitForSingleObject。口令只经环境变量传给子进程，不拼进命令行——
-// 命令行参数在进程列表里全机可见（docs/ling/04-详细设计/02 §8.4）。
+// 命令行参数在进程列表里全机可见（docs/ling/main/04-详细设计/02-依赖解析与调和.md §8.4）。
 //
 // 这一份只在 Windows 上编译，整个文件都是 Windows 版，不再写 #ifdef。
 #include "ling/sidecar_host.hpp"
 
-#include "ling/sys.hpp"
-
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 
+#include "ling/log.hpp"
+#include "ling/sys.hpp"
+
 namespace ling {
+namespace {
+
+// 写管道要放到独立线程里，并在主循环上设上限。用 Win32 线程而不是 std::thread：
+// MinGW 的 std::thread::native_handle_type 是整数句柄值，不能直接喂给
+// WaitForSingleObject/CancelSynchronousIo；CreateThread 直接给 HANDLE。
+struct WriteJob {
+    HANDLE pipe = nullptr;
+    std::string line;
+    HANDLE done = nullptr;
+    DWORD written = 0;
+    bool ok = false;
+};
+
+DWORD WINAPI write_pipe_proc(LPVOID param) {
+    auto* job = static_cast<WriteJob*>(param);
+    job->ok = ::WriteFile(job->pipe, job->line.data(),
+                          static_cast<DWORD>(job->line.size()), &job->written,
+                          nullptr) != FALSE;
+    ::SetEvent(job->done);
+    return 0;
+}
+
+}  // namespace
 
 Sidecar::Sidecar() = default;
 Sidecar::~Sidecar() { terminate(200); }
@@ -60,10 +85,14 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
     startup.hStdError = child_stdout_write;  // 侧车的 stderr 与 stdout 合流，一起进帧流
 
     PROCESS_INFORMATION info{};
-    std::wstring command = sys::utf8_to_wide(executable.string());
+    // 程序名单独给 lpApplicationName，避免路径里的空格被当成分隔符。
+    std::wstring application = sys::utf8_to_wide(executable.string());
+    // 命令行第一段必须是程序名本身：Windows 不会因为给了 lpApplicationName
+    // 就自动把 argv[0] 补进命令行。少了它，Python 收到的 argv[0] 是脚本路径、
+    // 没有脚本参数，会进交互模式一直等输入，握手就超时了。
+    std::wstring command = L"\"" + application + L"\"";
     if (!args.empty()) {
-        command += L" ";
-        command += sys::utf8_to_wide(args);
+        command += L" " + sys::utf8_to_wide(args);
     }
     std::wstring cwd = sys::utf8_to_wide(working_dir.string());
 
@@ -101,8 +130,9 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
         ::SetEnvironmentVariableW(names[i], values[i].c_str());
     }
 
-    const BOOL ok = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-                                     CREATE_NO_WINDOW, nullptr,
+    const BOOL ok = ::CreateProcessW(application.empty() ? nullptr : application.c_str(),
+                                     command.data(), nullptr, nullptr,
+                                     TRUE, CREATE_NO_WINDOW, nullptr,
                                      cwd.empty() ? nullptr : cwd.c_str(), &startup, &info);
 
     // 起完立刻还原，免得这几个变量漏到后续起的别的进程里。
@@ -132,10 +162,47 @@ bool Sidecar::send(const sidecar::Frame& frame, std::string* error) {
         return false;
     }
     const std::string line = sidecar::encode(frame);
-    DWORD written = 0;
-    if (!::WriteFile(reinterpret_cast<HANDLE>(stdin_write_), line.data(),
-                     static_cast<DWORD>(line.size()), &written, nullptr) ||
-        written != line.size()) {
+    // WriteFile 写管道是同步阻塞的：侧车卡住不读 stdin 时管道写满，宿主主循环
+    // 会永久等下去。放到工作线程里写，最多等 5 秒；超时就终止侧车，让写操作
+    // 立刻失败，再等线程收尾。
+    auto* job = new WriteJob;
+    job->pipe = reinterpret_cast<HANDLE>(stdin_write_);
+    job->line = line;
+    job->done = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (job->done == nullptr) {
+        delete job;
+        *error = "无法创建写完成事件";
+        return false;
+    }
+    HANDLE worker = ::CreateThread(nullptr, 0, &write_pipe_proc, job, 0, nullptr);
+    if (worker == nullptr) {
+        ::CloseHandle(job->done);
+        delete job;
+        *error = "无法创建写管道线程";
+        return false;
+    }
+    if (::WaitForSingleObject(job->done, 5000) != WAIT_OBJECT_0) {
+        // 先杀侧车，再取消写线程的同步 I/O。只杀直接子进程不够：孙进程若继承了
+        // 管道读端，WriteFile 仍然阻塞，无限等会把主循环卡死。
+        if (process_ != 0) {
+            ::TerminateProcess(reinterpret_cast<HANDLE>(process_), 1);
+        }
+        ::CancelSynchronousIo(worker);
+        if (::WaitForSingleObject(job->done, 2000) != WAIT_OBJECT_0) {
+            // 仍收不回来就丢下这条线程，主循环不能陪它一起等。线程和 job 都故意
+            // 留着：线程最终从 WriteFile 返回时会自己 SetEvent，进程退出再回收。
+            ::CloseHandle(worker);
+            *error = "写管道超时，侧车没有响应，写线程无法中断";
+            return false;
+        }
+    }
+    // 事件已置位，线程只剩收尾；等它真正退出后再删 job，避免悬空访问。
+    ::WaitForSingleObject(worker, INFINITE);
+    const bool sent = job->ok && job->written == static_cast<DWORD>(job->line.size());
+    ::CloseHandle(worker);
+    ::CloseHandle(job->done);
+    delete job;
+    if (!sent) {
         *error = "写管道失败";
         return false;
     }
@@ -154,7 +221,13 @@ bool Sidecar::read(sidecar::Frame* out, int timeout_ms, bool* closed, std::strin
             if (line.empty()) {
                 continue;
             }
-            return sidecar::parse(line, out, error);
+            std::string parse_error;
+            if (sidecar::parse(line, out, &parse_error)) {
+                return true;
+            }
+            // 坏帧只丢这一帧，不能把整个侧车判死：记一条 warn 后接着读下一帧。
+            log_warn("sidecar", "丢弃无法解析的帧：" + parse_error);
+            continue;
         }
 
         if (stdout_read_ == 0) {
@@ -176,6 +249,15 @@ bool Sidecar::read(sidecar::Frame* out, int timeout_ms, bool* closed, std::strin
                 return false;
             }
             pending_.append(chunk, got);
+            if (pending_.size() > sidecar::kMaxFrameBytes) {
+                // 侧车持续发字节却一直不给换行：缓冲区会无限增长（宿主要跟着吃内存），
+                // 且这一帧必然超限，直接断开并留下错误说明。
+                log_error("sidecar", "侧车输出缓冲区超过 1 MB，已断开");
+                pending_.clear();
+                *closed = true;
+                *error = "侧车输出缓冲区超过 1 MB";
+                return false;
+            }
             continue;
         }
         if (::WaitForSingleObject(reinterpret_cast<HANDLE>(process_), 0) == WAIT_OBJECT_0) {

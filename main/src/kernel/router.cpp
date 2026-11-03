@@ -4,8 +4,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <string>
 #include <utility>
 
+#include "ling/log.hpp"
 #include "ling/plugin_api.h"
 
 namespace ling {
@@ -113,17 +115,45 @@ CallOutcome Router::call(const std::string& method, const std::uint8_t* args,
     int32_t code = 0;
     try {
         code = fn(it->second.handler_ctx, args, len, &out, &out_len);
+    } catch (const std::exception& error) {
+        // 插件抛异常属于违约，但不能让它穿过边界；记下插件名与方法名便于定位。
+        log_error("router", "插件 " + it->second.plugin_id + " 的方法 " + method +
+                                " 抛出异常：" + error.what());
+        if (out != nullptr) {
+            std::free(out);
+        }
+        outcome.code = err::kInternal;
+        return outcome;
     } catch (...) {
-        // 插件越界抛异常属于违约，但不能让它穿过边界。
+        log_error("router", "插件 " + it->second.plugin_id + " 的方法 " + method + " 抛出未知异常");
+        if (out != nullptr) {
+            std::free(out);
+        }
         outcome.code = err::kInternal;
         return outcome;
     }
 
     if (code != 0) {
+        // 进程内 ABI 的处理函数只返回 int32，而宿主的错误码表全是字符串码
+        // （plugin-support/01 §5.2），数字对不上任何一项，无法原样透传；
+        // 记下数字供排查，对外按 E_INTERNAL 处理。
+        log_warn("router", "插件 " + it->second.plugin_id + " 的方法 " + method + " 返回码 " +
+                               std::to_string(code));
+        if (out != nullptr) {
+            std::free(out);
+        }
         outcome.code = err::kInternal;
         return outcome;
     }
-    if (out != nullptr && out_len > 0) {
+    if (out != nullptr) {
+        if (out_len > kMaxPayloadBytes) {
+            // 输出超过上限：整段丢弃并明确报超限，不把这么大的数据搬进内存。
+            log_warn("router", "插件 " + it->second.plugin_id + " 的方法 " + method + " 输出 " +
+                                   std::to_string(out_len) + " 字节，超过 1 MB");
+            std::free(out);
+            outcome.code = err::kPayloadTooLarge;
+            return outcome;
+        }
         outcome.data.assign(out, out + out_len);
         // 进程内轨道两侧共用同一个 /MD 运行时，插件用 malloc 申请、宿主用 free 归还。
         std::free(out);

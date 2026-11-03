@@ -2,8 +2,10 @@
 // 只有 --version、--help 与 logs --kernel 在本地直接完成。
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -12,6 +14,7 @@
 #include "ling/admin.hpp"
 #include "ling/errors.hpp"
 #include "ling/kernel.hpp"
+#include "ling/log.hpp"
 #include "ling/sys.hpp"
 #include "ling/version.hpp"
 
@@ -105,7 +108,27 @@ void print_usage(std::FILE* out) {
     std::fprintf(out, "  1. 开一个窗口跑        ling serve\n");
     std::fprintf(out, "  2. 另开一个窗口装插件    ling install <插件目录>\n");
     std::fprintf(out, "  3. 看装上了没有        ling plugins\n\n");
-    std::fprintf(out, "插件名就是 ling plugins 第一列显示的那个，比如 demo-a。\n");
+    std::fprintf(out, "插件名就是 ling plugins 第一列显示的那个，比如 core-job。\n");
+}
+
+// --port 严格解析：必须全数字、1 至 65535。默认起点 7900，候选段从
+// 起点往上连续 100 个；验收脚本会显式指定 8020 起的端口。用 atoi 直接
+// 转会把 "abc" 也当成 0、把 "7900x" 当成 7900。
+bool parse_port(const std::string& text, std::uint16_t* out) {
+    if (text.empty() || text.size() > 5) {
+        return false;
+    }
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+            return false;
+        }
+    }
+    const int value = std::atoi(text.c_str());
+    if (value < 1 || value > 65535) {
+        return false;
+    }
+    *out = static_cast<std::uint16_t>(value);
+    return true;
 }
 
 struct Args {
@@ -185,7 +208,8 @@ void print_plugins(const std::string& result_json) {
 
 void print_log_lines(const std::string& result_json) {
     const auto document = nlohmann::json::parse(result_json, nullptr, false);
-    if (document.is_discarded() || !document.contains("lines")) {
+    if (document.is_discarded() || !document.contains("lines") ||
+        !document["lines"].is_array()) {
         std::printf("%s\n", result_json.c_str());
         return;
     }
@@ -199,7 +223,9 @@ void print_log_lines(const std::string& result_json) {
         return;
     }
     for (const auto& line : document["lines"]) {
-        std::printf("%s\n", line.get<std::string>().c_str());
+        // lines 里理论上都是字符串；万一出现结构化值，按 JSON 文本打出来，别抛异常。
+        std::printf("%s\n", line.is_string() ? line.get<std::string>().c_str()
+                                             : line.dump().c_str());
     }
 }
 
@@ -323,8 +349,9 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     // 而 core-ui 这个侧车插件在装载时就要读它（拿口令连宿主）。端口先开，
     // 装载阶段的插件才能一装就通。
     ling::AdminServer server(&kernel);
-    // args.port 是 uint16_t，加偏移可能越过 65535 回绕；先算成 int 再夹到上限。
-    const int last_raw = static_cast<int>(args.port) + (args.port < 8000 ? 99 : 79);
+    // 候选从 --port 起连续 100 个，不写死 7900-7999：验收脚本会从 8020 起
+    // 指定端口，端口段固定在 7900 段会与脚本读到的 registry.json 对不上。
+    const int last_raw = static_cast<int>(args.port) + 99;
     const std::uint16_t last_port =
         static_cast<std::uint16_t>(last_raw > 65535 ? 65535 : last_raw);
     const std::string error = server.start(args.port, last_port);
@@ -350,13 +377,20 @@ int run_serve(const Args& args, const std::filesystem::path& program_dir) {
     std::fflush(stdout);
 
     while (!g_stop_requested.load()) {
-        if (!server.poll(200)) {
-            break;
+        try {
+            if (!server.poll(200)) {
+                break;
+            }
+            // 心跳挂在同一轮循环里，跟着已有的 200 毫秒节拍走，不另起唤醒。
+            kernel.publish_tick();
+            // 改清单、换产物之后自动重算，不用手动 reload。
+            kernel.watch_tick();
+        } catch (const std::exception& error) {
+            // 任何异常都不能带着栈退出进程：记一条日志，下一轮继续。
+            ling::log_error("host", std::string("主循环异常：") + error.what());
+        } catch (...) {
+            ling::log_error("host", "主循环未知异常");
         }
-        // 心跳挂在同一轮循环里，跟着已有的 200 毫秒节拍走，不另起唤醒。
-        kernel.publish_tick();
-        // 改清单、换产物之后自动重算，不用手动 reload。
-        kernel.watch_tick();
     }
     server.stop();
     std::printf("ling 已停止。\n");
@@ -378,12 +412,25 @@ int run_open(const Args& args) {
     std::ifstream ses_in(session);
     const auto ses = nlohmann::json::parse(ses_in, nullptr, false);
 
-    if (reg.is_discarded() || !reg.contains("ui_port") || ses.is_discarded() ||
-        !ses.contains("token")) {
+    if (reg.is_discarded() || !reg.is_object() || ses.is_discarded() || !ses.is_object() ||
+        !reg.contains("ui_port") || !ses.contains("token") || !ses["token"].is_string()) {
         std::fprintf(stderr, "界面没在运行。先开一个窗口跑 ling serve，再用 ling open。\n");
         return 3;
     }
-    const std::string url = "http://127.0.0.1:" + std::to_string(reg["ui_port"].get<int>()) +
+    // 这两个文件都是外部可改的，ui_port 取 int64 再判范围，别让 get<int>() 抛异常。
+    const auto& port_node = reg["ui_port"];
+    std::int64_t ui_port = 0;
+    if (port_node.is_number_unsigned()) {
+        const std::uint64_t raw = port_node.get<std::uint64_t>();
+        ui_port = raw > 65535u ? 0 : static_cast<std::int64_t>(raw);
+    } else if (port_node.is_number_integer()) {
+        ui_port = port_node.get<std::int64_t>();
+    }
+    if (ui_port < 1 || ui_port > 65535) {
+        std::fprintf(stderr, "界面没在运行。先开一个窗口跑 ling serve，再用 ling open。\n");
+        return 3;
+    }
+    const std::string url = "http://127.0.0.1:" + std::to_string(ui_port) +
                             "/?token=" + ses["token"].get<std::string>();
     std::string error;
     if (!ling::sys::open_in_browser(url, &error)) {
@@ -559,11 +606,17 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (token == "--data-dir" && i + 1 < arg_count) {
-            args.data_dir = raw_args[++i];
+            // raw_args 已经是 UTF-8；Windows 上直接赋给 std::filesystem::path
+            // 会按系统代码页解释，中文目录名会错，必须走 u8path。
+            args.data_dir = std::filesystem::u8path(raw_args[++i]);
             continue;
         }
-        if (token == "--port" && i + 1 < arg_count) {
-            args.port = static_cast<std::uint16_t>(std::atoi(raw_args[++i].c_str()));
+        if (token == "--port") {
+            if (i + 1 >= arg_count || !parse_port(raw_args[i + 1], &args.port)) {
+                std::fprintf(stderr, "--port 只接受 1 至 65535 之间的整数，例如 --port 7900。\n");
+                return 2;
+            }
+            ++i;
             continue;
         }
         if (token == "--purge") {

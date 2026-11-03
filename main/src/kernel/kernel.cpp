@@ -33,6 +33,63 @@ Kernel* g_kernel = nullptr;  // 单进程单宿主，见 03 §5.1 的进程模�
 // 的 ui_port，宿主只给一个起点（docs/ling/builtin-plugins/core-ui/04-详细设计/05 §4.1）。
 constexpr std::uint16_t kUiStartPort = 8010;
 
+// 目标路径必须严格落在 root 之内。按路径分量比较，避免 "/plugins-x" 被当成
+// "/plugins" 的前缀；恰好等于 root 本身也不算「之内」。
+bool path_within(const std::filesystem::path& root, const std::filesystem::path& target) {
+    auto root_it = root.begin();
+    auto target_it = target.begin();
+    for (; root_it != root.end(); ++root_it, ++target_it) {
+        if (target_it == target.end() || *root_it != *target_it) {
+            return false;
+        }
+    }
+    return target_it != target.end();
+}
+
+// Windows 命令行参数加引号：外层包引号，参数里的双引号转义，末尾连续的
+// 反斜杠翻倍。带空格或中文的路径靠它才能原样传到子进程。
+std::string quote_command_arg(const std::string& text) {
+    std::string out = "\"";
+    std::size_t backslashes = 0;
+    for (const char ch : text) {
+        if (ch == '\\') {
+            ++backslashes;
+            continue;
+        }
+        if (ch == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+        } else {
+            out.append(backslashes, '\\');
+        }
+        backslashes = 0;
+        out.push_back(ch);
+    }
+    out.append(backslashes * 2, '\\');
+    out.push_back('"');
+    return out;
+}
+
+// 常驻配额（plugin-support/01 §8.7）：Python 侧车最多 1 个声明 restart="always"
+// 的常驻实例，第 2 个装载被拒，message 说明当前常驻的是哪个插件。
+std::string resident_quota_error(const std::vector<LoadedPlugin>& plugins,
+                                 const Manifest& manifest, const std::string& exclude_id) {
+    if (!manifest.sidecar.present || manifest.sidecar.restart != "always" ||
+        manifest.sidecar.runtime != "python") {
+        return {};
+    }
+    for (const auto& existing : plugins) {
+        if (existing.manifest.id == exclude_id || existing.state != PluginState::kActivated) {
+            continue;
+        }
+        if (existing.manifest.sidecar.present && existing.manifest.sidecar.restart == "always" &&
+            existing.manifest.sidecar.runtime == "python") {
+            return std::string(err::kResidentLimit) + " 常驻 Python 侧车已有 " +
+                   existing.manifest.id;
+        }
+    }
+    return {};
+}
+
 // ---------- 宿主函数表实现 ----------
 
 void* host_context_alloc(const char* plugin_id, std::uint64_t generation) {
@@ -394,15 +451,54 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
 
     const auto target = plugins_dir() / parsed.manifest->id;
     std::error_code ec;
+    // 常驻配额是「装载」的校验（清单第 12 步），但装包时就拒掉更符合预期：
+    // 否则装进去以后永远启不来，用户还得自己排查。
+    const std::string quota =
+        resident_quota_error(plugins_, *parsed.manifest, parsed.manifest->id);
+    if (!quota.empty()) {
+        log_warn("loader", "拒绝安装 " + parsed.manifest->id + "：" + quota);
+        return quota;
+    }
     // 判定口径见 04/02 §2.1：plugin.toml 存在才算已安装。
     // 只剩 data/ 的目录算未安装，可以重装并沿用里面的数据。
     if (std::filesystem::exists(target / "plugin.toml", ec)) {
         return std::string(err::kPluginExists) + " 已存在 " + target.string() + "，先卸载再装";
     }
+    const bool target_existed = std::filesystem::exists(target, ec);
+
+    // 安装途中有任何一步失败都要把半成品目录删掉，否则只留一半文件的目录会被
+    // 「plugin.toml 存在即已安装」的口径当成装好了，重装又会撞 E_PLUGIN_EXISTS。
+    // 但重装前就存在的 data/ 是用户的旧数据，回滚时不能一起删。
+    auto rollback = [&target, target_existed](const std::string& code, const std::string& detail) {
+        std::error_code cleanup_ec;
+        if (!target_existed) {
+            std::filesystem::remove_all(target, cleanup_ec);
+        } else {
+            std::filesystem::directory_iterator iterator(target, cleanup_ec);
+            while (!cleanup_ec && iterator != std::filesystem::directory_iterator()) {
+                if (iterator->path().filename() != "data") {
+                    std::filesystem::remove_all(iterator->path(), cleanup_ec);
+                }
+                iterator.increment(cleanup_ec);
+            }
+        }
+        if (cleanup_ec) {
+            log_warn("loader", "安装回滚失败，残留目录 " + target.string() + "：" +
+                                   cleanup_ec.message());
+        }
+        return code + " " + detail;
+    };
 
     std::filesystem::create_directories(target, ec);
+    if (ec) {
+        return rollback(err::kIo, "无法创建目录 " + target.string() + "：" + ec.message());
+    }
     // 逐个拷贝顶层条目，跳过 data/，避免把旧数据覆盖掉。
-    for (const auto& entry : std::filesystem::directory_iterator(source_dir, ec)) {
+    std::filesystem::directory_iterator iterator(source_dir, ec);
+    if (ec) {
+        return rollback(err::kIo, "无法读取源目录 " + source_dir.string() + "：" + ec.message());
+    }
+    for (const auto& entry : iterator) {
         if (entry.path().filename() == "data") {
             continue;
         }
@@ -411,16 +507,49 @@ std::string Kernel::install(const std::filesystem::path& source_dir) {
                                   std::filesystem::copy_options::overwrite_existing,
                               ec);
         if (ec) {
-            return std::string(err::kIo) + " 复制失败：" + ec.message();
+            return rollback(err::kIo, "复制失败：" + ec.message());
         }
     }
 
     std::filesystem::create_directories(target / "data", ec);
+    if (ec) {
+        return rollback(err::kIo, "无法创建数据目录：" + ec.message());
+    }
     log_info("loader", "已安装 " + parsed.manifest->id + " " + parsed.manifest->version);
     return {};
 }
 
 std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
+    // 编号会直接拼进路径并交给 remove_all：先按清单同一套规则校验，再确认目标
+    // 确实落在 plugins/ 之内，两层都过了才动手。
+    if (!valid_plugin_id(plugin_id)) {
+        return std::string(err::kPluginMissing) + " 编号不合法：" + plugin_id;
+    }
+    std::error_code path_ec;
+    const auto plugins_root = std::filesystem::weakly_canonical(plugins_dir(), path_ec);
+    const auto dir = std::filesystem::weakly_canonical(plugins_dir() / plugin_id, path_ec);
+    if (path_ec) {
+        return std::string(err::kIo) + " 无法解析插件目录：" + path_ec.message();
+    }
+    if (!path_within(plugins_root, dir)) {
+        return std::string(err::kPluginMissing) + " 编号不合法：" + plugin_id;
+    }
+
+    // 先把目录看一遍再动内存：目录不存在或读不了时直接返回，别出现「内存里已卸载、
+    // 磁盘却没清」这种回不去的中间状态。迭代器也先建好，删除期间继续用。
+    std::error_code ec;
+    const bool dir_exists = std::filesystem::exists(dir, ec);
+    if (ec) {
+        return std::string(err::kIo) + " 无法检查 " + dir.string() + "：" + ec.message();
+    }
+    if (!dir_exists) {
+        return std::string(err::kPluginMissing) + " " + plugin_id;
+    }
+    std::filesystem::directory_iterator iterator(dir, ec);
+    if (ec) {
+        return std::string(err::kIo) + " 无法读取 " + dir.string() + "：" + ec.message();
+    }
+
     LoadedPlugin* plugin = find(plugin_id);
     if (plugin != nullptr) {
         const bool was_activated = plugin->state == PluginState::kActivated;
@@ -431,10 +560,31 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
                 std::string detail = std::string(err::kUninstallIncomplete) + " 有 " +
                                      std::to_string(report.failed) + " 条效应撤销失败：";
                 for (const auto& item : report.failed_items) {
-                    detail += item + " ";
+                    // 逐条标出失败类型，方便调用方按码分类；整体仍返回 E_UNINSTALL_INCOMPLETE。
+                    detail += std::string(err::kUndoFailed) + " " + item + " ";
                 }
                 log_error("loader", plugin_id + " " + detail);
                 return detail;
+            }
+            // 侧车插件在装完/卸载时也要把自己的进程和宿主上下文收掉，不能只
+            // 卸动态库：否则进程还在跑，上下文表里也留着旧指针。
+            if (plugin->sidecar) {
+                if (plugin->process != nullptr) {
+                    plugin->process->terminate(2000);
+                    plugin->process.reset();
+                }
+                plugin->sidecar = false;
+                plugin->sidecar_methods.clear();
+                plugin->sidecar_subs.clear();
+                const std::string prefix = plugin_id + "/";
+                for (auto it = sidecar_method_ctx_.begin(); it != sidecar_method_ctx_.end();) {
+                    if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                        it = sidecar_method_ctx_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                sidecar_sub_ctx_.erase(plugin_id);
             }
             const auto removed = router_.unregister_all(plugin_id);
             if (!removed.empty()) {
@@ -459,22 +609,28 @@ std::string Kernel::uninstall(const std::string& plugin_id, bool purge) {
         contexts_.erase(plugin_id);
     }
 
-    const auto dir = plugins_dir() / plugin_id;
-    std::error_code ec;
-    if (!std::filesystem::exists(dir, ec)) {
-        return std::string(err::kPluginMissing) + " " + plugin_id;
-    }
-
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-        const auto name = entry.path().filename().string();
-        if (name == "data" && !purge) {
-            continue;
+    while (iterator != std::filesystem::directory_iterator()) {
+        const auto name = iterator->path().filename().string();
+        if (!(name == "data" && !purge)) {
+            std::error_code remove_ec;
+            std::filesystem::remove_all(iterator->path(), remove_ec);
+            if (remove_ec) {
+                return std::string(err::kIo) + " 删除失败 " + iterator->path().string() + "：" +
+                       remove_ec.message();
+            }
         }
-        std::filesystem::remove_all(entry.path(), ec);
+        iterator.increment(ec);
+        if (ec) {
+            return std::string(err::kIo) + " 遍历失败 " + dir.string() + "：" + ec.message();
+        }
     }
     // --purge 连目录本身一起删掉；不带 purge 时目录要留着装 data/。
     if (purge) {
-        std::filesystem::remove_all(dir, ec);
+        std::error_code remove_ec;
+        std::filesystem::remove_all(dir, remove_ec);
+        if (remove_ec) {
+            return std::string(err::kIo) + " 删除失败 " + dir.string() + "：" + remove_ec.message();
+        }
     }
 
     log_info("loader", std::string("已卸载 ") + plugin_id + (purge ? "（含数据）" : "（保留数据）"));
@@ -651,8 +807,18 @@ void Kernel::watch_tick() {
 
     std::map<std::string, std::uint64_t> current;
     std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(plugins_dir(), ec)) {
-        if (!entry.is_directory()) {
+    std::filesystem::directory_iterator iterator(plugins_dir(), ec);
+    if (ec) {
+        // 目录暂时读不到（权限、盘符断开）时本轮跳过，不要把异常抛进主循环。
+        log_warn("watch", "扫描插件目录失败：" + ec.message());
+        return;
+    }
+    for (const auto& entry : iterator) {
+        std::error_code entry_ec;
+        if (!entry.is_directory(entry_ec)) {
+            if (entry_ec) {
+                log_warn("watch", "读取插件目录项失败：" + entry_ec.message());
+            }
             continue;
         }
         // 用清单的指纹（修改时间 + 大小）判断有没有被改过。改依赖、改版本、换产物
@@ -963,8 +1129,19 @@ std::string Kernel::reconcile() {
 }
 
 std::string Kernel::load_one(const std::string& plugin_id) {
-    if (find(plugin_id) != nullptr) {
-        return {};  // 已装载：幂等
+    // 编号会拼进路径：先按清单规则校验，避免 ../ 把插件装到 plugins/ 之外。
+    if (!valid_plugin_id(plugin_id)) {
+        return std::string(err::kPluginMissing) + " 编号不合法：" + plugin_id;
+    }
+    if (LoadedPlugin* existing = find(plugin_id); existing != nullptr) {
+        if (existing->state == PluginState::kActivated) {
+            return std::string(err::kPluginExists) + " " + plugin_id + " 已在运行";
+        }
+        // 上次激活失败的实例还留在表里：不先清掉的话，新版本会被这个旧实例顶掉，
+        // reload 之后表里看到的仍是旧的失败实例。
+        deactivate(*existing);
+        plugins_.erase(plugins_.begin() + (existing - plugins_.data()));
+        contexts_.erase(plugin_id);
     }
     const auto dir = plugins_dir() / plugin_id;
     std::error_code ec;
@@ -977,6 +1154,12 @@ std::string Kernel::load_one(const std::string& plugin_id) {
     const ManifestResult parsed = load_manifest(dir, host_version_string());
     if (!parsed.ok()) {
         return parsed.code + " " + parsed.detail;
+    }
+    // 清单第 12 步的常驻配额校验。放在真正装载之前，超限时不产生失败实例。
+    const std::string quota = resident_quota_error(plugins_, *parsed.manifest, plugin_id);
+    if (!quota.empty()) {
+        log_warn("loader", plugin_id + " 未装载：" + quota);
+        return quota;
     }
 
     LoadedPlugin plugin;
@@ -1245,11 +1428,16 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "缺少 id";
             return reply;
         }
+        if (!valid_plugin_id(id)) {
+            reply.code = err::kPluginMissing;
+            reply.message = "编号不合法：" + id;
+            return reply;
+        }
         const auto dir = plugins_dir() / id;
         std::error_code dir_ec;
         if (!std::filesystem::exists(dir / "plugin.toml", dir_ec)) {
             reply.code = err::kPluginMissing;
-            reply.message = id;
+            reply.message = "找不到这个插件：" + id;
             return reply;
         }
         const ManifestResult before = load_manifest(dir, host_version_string());
@@ -1270,7 +1458,18 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         // 让依赖它的先停：先置为不可用，调和一次，再换产物。
         reloading_.insert(id);
         reconcile();
-        unload_one(id);  // 没在跑也算正常
+        const LoadedPlugin* reloading_plugin = find(id);
+        const bool was_activated =
+            reloading_plugin != nullptr && reloading_plugin->state == PluginState::kActivated;
+        const std::string unload_code = unload_one(id);
+        if (was_activated && !unload_code.empty()) {
+            // 旧版本停不下来就报失败：不能装作换成功，否则界面以为已是新版本。
+            reloading_.erase(id);
+            reconcile();
+            reply.code = err::kReloadFailed;
+            reply.message = "停掉旧版本失败：" + unload_code;
+            return reply;
+        }
         const std::string load_code = load_one(id);
         reloading_.erase(id);
         if (!load_code.empty()) {
@@ -1304,14 +1503,16 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "缺少 path";
             return reply;
         }
-        const std::string code = install(path);
+        // path 来自管理端口 JSON，是 UTF-8；Windows 上不能让它隐式当 ANSI 路径用。
+        const std::filesystem::path source = std::filesystem::u8path(path);
+        const std::string code = install(source);
         if (!code.empty()) {
             fill_error(reply, code);
             return reply;
         }
         // 安装完不直接装载，先调和一次：新装的插件可能依赖别人，也可能让别的
         // 插件从「等依赖」变成「可以起」。顺序与原因都由调和统一决定（04/04 §5）。
-        const ManifestResult parsed = load_manifest(path, host_version_string());
+        const ManifestResult parsed = load_manifest(source, host_version_string());
         const std::string id = parsed.ok() ? parsed.manifest->id : std::string();
         nlohmann::json result;
         result["id"] = id;
@@ -1397,6 +1598,11 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "缺少 plugin";
             return reply;
         }
+        if (!valid_plugin_id(id)) {
+            reply.code = err::kPluginMissing;
+            reply.message = "插件编号不合法：" + id;
+            return reply;
+        }
         const auto dir = plugins_dir() / id / "data";
         std::error_code ec;
         if (!std::filesystem::exists(dir, ec)) {
@@ -1407,26 +1613,28 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         // 三个可选参数给界面用：条数、级别过滤、上翻偏移。命令行只给 plugin，
         // 这时行为与以前一样（40 条、不过滤）。参数交给 core-log 之前先夹住，
         // 别让界面要一万条。
-        int count = 40;
-        if (args.contains("lines") && args["lines"].is_number_integer()) {
-            count = args["lines"].get<int>();
-        }
-        if (count < 1) {
-            count = 1;
-        }
-        if (count > 1000) {
-            count = 1000;
-        }
-        int before = 0;
-        if (args.contains("before") && args["before"].is_number_integer()) {
-            before = args["before"].get<int>();
-        }
-        if (before < 0) {
-            before = 0;
-        }
-        if (before > 10000) {
-            before = 10000;
-        }
+        // 先取 int64 再夹取：3e9 这种值直接 get<int>() 会抛 out_of_range，
+        // 一个越界的界面参数不该让整个管理请求崩掉。
+        const auto clamp_arg = [&args](const char* key, std::int64_t fallback, std::int64_t low,
+                                       std::int64_t high) {
+            if (!args.contains(key)) {
+                return fallback;
+            }
+            const auto& node = args[key];
+            std::int64_t value = fallback;
+            if (node.is_number_unsigned()) {
+                const std::uint64_t raw = node.get<std::uint64_t>();
+                value = raw > static_cast<std::uint64_t>(high) ? high
+                                                              : static_cast<std::int64_t>(raw);
+            } else if (node.is_number_integer()) {
+                value = node.get<std::int64_t>();
+            } else {
+                return fallback;
+            }
+            return std::clamp(value, low, high);
+        };
+        const int count = static_cast<int>(clamp_arg("lines", 40, 1, 1000));
+        const int before = static_cast<int>(clamp_arg("before", 0, 0, 10000));
         const std::string level = string_arg("level");
         // core-log 在时优先问它（04/06 §5.5 的第一条路径），不在时退回读 data/ 下的 .log。
         if (find("core-log") != nullptr) {
@@ -1451,7 +1659,7 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
                         parsed["lines"].is_array() && !parsed["lines"].empty()) {
                         auto& lines = parsed["lines"];
                         // query 返回的是整份日志，界面只要末尾 count 条，再往前翻 before 条。
-                        const std::size_t keep = static_cast<std::size_t>(count);
+                        const std::size_t keep = static_cast<std::size_t>(count + before);
                         if (lines.size() > keep) {
                             lines.erase(lines.begin(),
                                         lines.end() - static_cast<std::ptrdiff_t>(keep));
@@ -1473,17 +1681,37 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         }
         // 取数据目录下最新的 .log 文件；没有就用空列表，不报错。
         std::filesystem::path latest;
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (!entry.is_regular_file()) {
-                continue;
+        std::filesystem::directory_iterator iterator(dir, ec);
+        if (ec) {
+            reply.code = err::kIo;
+            reply.message = "无法读取日志目录：" + ec.message();
+            return reply;
+        }
+        while (iterator != std::filesystem::directory_iterator()) {
+            const auto& entry = *iterator;
+            if (entry.is_regular_file() && entry.path().extension() == ".log") {
+                // 每次取时间都用独立的 error_code：共用一个失败状态会让
+                // 「某次读取失败」把后面的比较全带偏。
+                std::error_code entry_ec;
+                const auto stamp = std::filesystem::last_write_time(entry, entry_ec);
+                if (!entry_ec) {
+                    bool newer = latest.empty();
+                    if (!newer) {
+                        std::error_code latest_ec;
+                        const auto latest_stamp =
+                            std::filesystem::last_write_time(latest, latest_ec);
+                        newer = latest_ec || stamp > latest_stamp;
+                    }
+                    if (newer) {
+                        latest = entry.path();
+                    }
+                }
             }
-            if (entry.path().extension() != ".log") {
-                continue;
-            }
-            if (latest.empty() ||
-                std::filesystem::last_write_time(entry, ec) >
-                    std::filesystem::last_write_time(latest, ec)) {
-                latest = entry.path();
+            iterator.increment(ec);
+            if (ec) {
+                reply.code = err::kIo;
+                reply.message = "遍历日志目录失败：" + ec.message();
+                return reply;
             }
         }
         nlohmann::json result;
@@ -1601,6 +1829,10 @@ std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
     const auto data_dir = dir / "data";
     std::error_code ec;
     std::filesystem::create_directories(data_dir, ec);
+    if (ec) {
+        return std::string(err::kIo) + " 无法创建数据目录 " + data_dir.string() + "：" +
+               ec.message();
+    }
 
     // 两种运行时走同一套握手与帧，差别只在「用什么起这个进程」。
     std::filesystem::path exe;
@@ -1613,7 +1845,7 @@ std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
                    " 找不到 Python 解释器：装一个 Python 3，或用环境变量 LING_PYTHON 指定路径";
         }
         const auto script = dir / plugin.manifest.sidecar.entry;
-        exe_args = "\"" + script.string() + "\"";
+        exe_args = quote_command_arg(script.string());
         if (!program_dir_.empty()) {
             sdk_dir = program_dir_ / "python";
         }
@@ -1740,8 +1972,9 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
             return true;
         }
         const std::string key = plugin.manifest.id + "/" + name;
-        auto& ctx = sidecar_method_ctx_[key];
-        ctx = std::make_unique<SidecarMethodCtx>();
+        // 先建新上下文、注册成功后再落表：注册失败（例如重名）时旧上下文还在，
+        // 路由里的 handler_ctx 也就不会被换成一个马上要被删掉的指针。
+        auto ctx = std::make_unique<SidecarMethodCtx>();
         ctx->kernel = this;
         ctx->plugin_id = plugin.manifest.id;
         ctx->method = name;
@@ -1751,6 +1984,7 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
             log_warn("sidecar", plugin.manifest.id + " 登记 " + name + " 失败：" + code);
             return true;
         }
+        sidecar_method_ctx_[key] = std::move(ctx);
         plugin.sidecar_methods.push_back(name);
         log_info("sidecar", plugin.manifest.id + " 登记方法 " + name);
         return true;
@@ -1917,6 +2151,17 @@ void Kernel::sidecar_lost(LoadedPlugin& plugin, const std::string& reason) {
     const std::string id = plugin.manifest.id;
     router_.unregister_all(id);
     events_.unsubscribe_all(id);
+    // 方法/订阅都没了，它们各自的宿主上下文也要一起清：否则 crash 后按
+    // restart 策略重起并重新注册时，旧上下文一直留在表里。
+    const std::string prefix = id + "/";
+    for (auto it = sidecar_method_ctx_.begin(); it != sidecar_method_ctx_.end();) {
+        if (it->first.compare(0, prefix.size(), prefix) == 0) {
+            it = sidecar_method_ctx_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    sidecar_sub_ctx_.erase(id);
     plugin.sidecar_methods.clear();
     plugin.sidecar_subs.clear();
     const int code = plugin.process != nullptr ? plugin.process->exit_code() : -1;
@@ -2004,7 +2249,7 @@ CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::stri
 
     log_info("sidecar", "invoke #" + std::to_string(call_id) + " " + method);
     const auto started = std::chrono::steady_clock::now();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < deadline) {
         sidecar::Frame frame;
         bool closed = false;
@@ -2035,9 +2280,20 @@ CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::stri
             return outcome;
         }
         if (frame.id == call_id && frame.op == "error") {
-            outcome.code = frame.fields.contains("error") && frame.fields["error"].contains("code")
-                               ? frame.fields["error"]["code"].get<std::string>()
-                               : err::kInternal;
+            // 错误帧的 code / message 都可能缺失或类型不对，先判类型再取，
+            // 不做 get<std::string>()，免得坏帧把异常抛到调用路径上。
+            if (frame.fields.contains("error") && frame.fields["error"].is_object() &&
+                frame.fields["error"].contains("code") &&
+                frame.fields["error"]["code"].is_string()) {
+                outcome.code = frame.fields["error"]["code"].get<std::string>();
+            } else {
+                outcome.code = err::kInternal;
+            }
+            if (frame.fields.contains("error") && frame.fields["error"].is_object() &&
+                frame.fields["error"].contains("message") &&
+                frame.fields["error"]["message"].is_string()) {
+                outcome.detail = frame.fields["error"]["message"].get<std::string>();
+            }
             return outcome;
         }
         // 等待期间来的别的帧照常处理（登记、事件、别人的调用）。
@@ -2045,7 +2301,7 @@ CallOutcome Kernel::invoke_sidecar(const std::string& plugin_id, const std::stri
     }
 
     outcome.code = err::kTimeout;
-    outcome.detail = "侧车 30 秒没有应答";
+    outcome.detail = "侧车 5 秒没有应答";
     return outcome;
 }
 
@@ -2084,24 +2340,52 @@ std::string Kernel::activate(LoadedPlugin& plugin) {
     // 入口即激活点：插件在 entry 里登记方法，所以状态要先置为可注册。
     plugin.state = PluginState::kActivated;
 
+    // entry 一旦跑过，就可能已经登记了方法和订阅。后面任何校验失败都必须先把
+    // 这些注册撤干净再卸库，否则路由和事件表里留着指向已卸载 DLL 的函数指针。
+    auto rollback_activation = [&plugin, this]() {
+        const UndoReport report = plugin.ledger.undo_all();
+        if (report.failed > 0) {
+            log_error("loader", plugin.manifest.id + " 激活回滚有 " +
+                                   std::to_string(report.failed) + " 条效应撤销失败");
+        }
+        router_.unregister_all(plugin.manifest.id);
+        events_.unsubscribe_all(plugin.manifest.id);
+        sys::unload_library(plugin.module);
+        plugin.module = nullptr;
+        plugin.handle = nullptr;
+        plugin.state = PluginState::kInstalled;
+    };
+
     ling_plugin_descriptor desc{};
     void* handle = nullptr;
     if (entry(&host_api_, &desc, &handle) != 0) {
-        sys::unload_library(plugin.module);
-        plugin.module = nullptr;
+        rollback_activation();
         return std::string(err::kInternal) + " 入口返回非 0";
     }
 
     if (desc.abi_version != LING_ABI_VERSION) {
-        sys::unload_library(plugin.module);
-        plugin.module = nullptr;
+        rollback_activation();
         return std::string(err::kApiMismatch) + " ABI 版本 " +
                std::to_string(desc.abi_version) + " 与宿主 " + std::to_string(LING_ABI_VERSION) +
                " 不同";
     }
+    // 接口主版本、插件版本也要和清单一致：只有 ABI 对齐、版本却是另一份产物的
+    // 插件，装进来后行为对不上，排查起来很难。
+    if (desc.api == nullptr || plugin.manifest.api != desc.api) {
+        rollback_activation();
+        return std::string(err::kApiMismatch) + " 代码里的 api " +
+               (desc.api != nullptr ? std::string(desc.api) : std::string("(空)")) + " 与清单 " +
+               plugin.manifest.api + " 不一致";
+    }
+    if (desc.plugin_version == nullptr || plugin.manifest.version != desc.plugin_version) {
+        rollback_activation();
+        const std::string code_version =
+            desc.plugin_version != nullptr ? std::string(desc.plugin_version) : std::string("(空)");
+        return std::string(err::kApiMismatch) + " 代码里的 plugin_version " + code_version +
+               " 与清单 " + plugin.manifest.version + " 不一致";
+    }
     if (desc.plugin_id == nullptr || plugin.manifest.id != desc.plugin_id) {
-        sys::unload_library(plugin.module);
-        plugin.module = nullptr;
+        rollback_activation();
         return std::string(err::kManifestInvalid) + " 代码里的 plugin_id 与清单不一致";
     }
 
@@ -2144,6 +2428,16 @@ void Kernel::deactivate(LoadedPlugin& plugin) {
         plugin.sidecar_subs.clear();
         router_.unregister_all(plugin.manifest.id);
         events_.unsubscribe_all(plugin.manifest.id);
+        // 侧车停掉后，它注册方法与订阅时创建的宿主上下文也要按前缀清掉。
+        const std::string prefix = plugin.manifest.id + "/";
+        for (auto it = sidecar_method_ctx_.begin(); it != sidecar_method_ctx_.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                it = sidecar_method_ctx_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        sidecar_sub_ctx_.erase(plugin.manifest.id);
         plugin.handle = nullptr;
         plugin.state = PluginState::kInstalled;
         return;
@@ -2188,6 +2482,12 @@ void* Kernel::create_context(const std::string& plugin_id, std::uint64_t generat
 
     std::error_code ec;
     std::filesystem::create_directories(context->data_dir, ec);
+    if (ec) {
+        // 数据目录建不出来时不能把上下文交出去：插件拿到一个写不进数据根的
+        // data_dir，后面所有读写都会以更难查的方式失败。
+        log_error("loader", plugin_id + " 的数据目录建不出来：" + ec.message());
+        return nullptr;
+    }
 
     void* raw = context.get();
     contexts_[plugin_id] = std::move(context);
@@ -2318,7 +2618,18 @@ std::string Kernel::write_config(const std::string& plugin_id, const std::string
     if (previous.ok()) {
         const auto parsed = nlohmann::json::parse(
             std::string(previous.data.begin(), previous.data.end()), nullptr, false);
-        if (!parsed.is_discarded() && parsed.contains("found") && parsed["found"].get<bool>()) {
+        // core-settings 的回复必须有布尔 found；类型不对说明插件回复破损，
+        // 这时候写下去等于用 null 覆盖旧值，撤销也还原不了。
+        if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("found") ||
+            !parsed["found"].is_boolean()) {
+            log_error("ledger", plugin_id + " 读配置 " + key + " 的回复不符合协议");
+            return err::kProtocol;
+        }
+        if (parsed["found"].get<bool>()) {
+            if (!parsed.contains("value")) {
+                log_error("ledger", plugin_id + " 读配置 " + key + " 的回复缺少 value");
+                return err::kProtocol;
+            }
             old_json = parsed["value"].dump();
         }
     } else if (previous.code == err::kMethodMissing) {
@@ -2338,7 +2649,12 @@ std::string Kernel::write_config(const std::string& plugin_id, const std::string
     };
     if (!plugin->ledger.append(std::move(effect))) {
         // 记账失败就把刚写的值也撤回去，别留下无主的配置。
-        apply_config(plugin_id, key, old_json);
+        const std::string undo_code = apply_config(plugin_id, key, old_json);
+        if (!undo_code.empty()) {
+            // 回滚也失败：配置已改但账本里没有这条，doctor 必须能看到这处残留。
+            ++pending_undo_[plugin_id];
+            log_error("ledger", plugin_id + " 账本满后回滚 " + key + " 失败：" + undo_code);
+        }
         return err::kLedgerFull;
     }
     return {};

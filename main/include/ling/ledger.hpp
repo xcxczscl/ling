@@ -10,7 +10,8 @@
 
 namespace ling {
 
-// 五类效应里 S2 只实现前两类，其余在接入事件与配置后补。
+// 五类效应里已启用 kMethodRegistered、kSubscribed、kConfigWrite 三类；
+// kFsWrite、kHandleOpened 目前没有写入方，作为后续扩展预留。
 enum class EffectKind { kMethodRegistered, kSubscribed, kFsWrite, kConfigWrite, kHandleOpened };
 
 struct Effect {

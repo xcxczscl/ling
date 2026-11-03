@@ -17,6 +17,7 @@ inline constexpr const char* kTimeout = "E_TIMEOUT";
 inline constexpr const char* kPayloadTooLarge = "E_PAYLOAD_TOO_LARGE";
 inline constexpr const char* kDependencyCycle = "E_DEPENDENCY_CYCLE";
 inline constexpr const char* kReloadFailed = "E_RELOAD_FAILED";
+// 保留未用：撤销失败目前用 E_UNINSTALL_INCOMPLETE 表达。
 inline constexpr const char* kUndoFailed = "E_UNDO_FAILED";
 inline constexpr const char* kLedgerInvalid = "E_LEDGER_INVALID";
 inline constexpr const char* kAuth = "E_AUTH";
@@ -26,8 +27,10 @@ inline constexpr const char* kIo = "E_IO";
 inline constexpr const char* kUninstallIncomplete = "E_UNINSTALL_INCOMPLETE";
 inline constexpr const char* kDuplicateMethod = "E_DUPLICATE_METHOD";
 inline constexpr const char* kInternal = "E_INTERNAL";
+// 保留未用：关机流程当前直接拒绝新请求并断开，没有单独回这个码。
 inline constexpr const char* kShuttingDown = "E_SHUTTING_DOWN";
 inline constexpr const char* kLedgerFull = "E_LEDGER_FULL";
+// 保留未用：批量计划的取消当前只回 succeeded=false，没有单独回这个码。
 inline constexpr const char* kCancelled = "E_CANCELLED";
 inline constexpr const char* kResidentLimit = "E_RESIDENT_LIMIT";
 

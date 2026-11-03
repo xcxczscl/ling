@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <string>
 
@@ -78,7 +79,14 @@ bool read_port(const std::filesystem::path& data_root, std::uint16_t* out_port,
             *error = "宿主未运行（registry.json 里没有端口）";
             return false;
         }
-        *out_port = static_cast<std::uint16_t>(document["port"].get<unsigned>());
+        // 端口先做范围校验再截成 uint16：直接 static_cast 会把 70000 变成 4464、
+        // 65536 变成 0，然后去连一个完全不相干的端口。
+        const std::uint64_t raw_port = document["port"].get<std::uint64_t>();
+        if (raw_port < 1 || raw_port > 65535) {
+            *error = "宿主未运行（registry.json 里的端口不在 1 到 65535 之间）";
+            return false;
+        }
+        *out_port = static_cast<std::uint16_t>(raw_port);
         return true;
     } catch (const std::exception&) {
         *error = "宿主未运行（registry.json 读不出来）";

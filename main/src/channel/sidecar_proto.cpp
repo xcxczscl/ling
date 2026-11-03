@@ -1,5 +1,9 @@
 #include "ling/sidecar_proto.hpp"
 
+#include <cstdint>
+#include <limits>
+#include <string>
+
 #include "ling/errors.hpp"
 
 namespace ling {
@@ -45,7 +49,20 @@ bool parse(const std::string& line, Frame* out, std::string* error) {
         *error = "缺少协议版本 v";
         return false;
     }
-    const int version = document["v"].get<int>();
+    // v / id 都是外部输入：直接 get<int>() 遇到 3e9 这类值会抛 out_of_range，
+    // 先按 int64 取再判断，坏帧只能得到「版本不匹配」，不该变成异常。
+    std::int64_t version = 0;
+    if (document["v"].is_number_unsigned()) {
+        const std::uint64_t raw = document["v"].get<std::uint64_t>();
+        version = raw > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())
+                      ? std::numeric_limits<std::int32_t>::max()
+                      : static_cast<std::int64_t>(raw);
+    } else if (document["v"].is_number_integer()) {
+        version = document["v"].get<std::int64_t>();
+    } else {
+        *error = "协议版本 v 必须是整数";
+        return false;
+    }
     if (version != kProtocolVersion) {
         *error = "协议版本 " + std::to_string(version) + " 与宿主 " +
                  std::to_string(kProtocolVersion) + " 不同";
@@ -57,9 +74,22 @@ bool parse(const std::string& line, Frame* out, std::string* error) {
     }
 
     out->op = document["op"].get<std::string>();
-    out->id = document.contains("id") && document["id"].is_number_integer()
-                  ? document["id"].get<int>()
-                  : 0;
+    out->id = 0;
+    if (document.contains("id")) {
+        const auto& id_node = document["id"];
+        if (id_node.is_number_unsigned()) {
+            const std::uint64_t raw = id_node.get<std::uint64_t>();
+            if (raw <= static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+                out->id = static_cast<int>(raw);
+            }
+        } else if (id_node.is_number_integer()) {
+            const std::int64_t raw = id_node.get<std::int64_t>();
+            if (raw >= std::numeric_limits<int>::min() &&
+                raw <= std::numeric_limits<int>::max()) {
+                out->id = static_cast<int>(raw);
+            }
+        }
+    }
     out->fields = std::move(document);
     return true;
 }

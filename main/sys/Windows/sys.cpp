@@ -153,7 +153,8 @@ bool open_in_browser(const std::string& url, std::string* error) {
 // ---- 动态库 ----
 
 void* load_library(const std::filesystem::path& path) {
-    return reinterpret_cast<void*>(::LoadLibraryA(path.string().c_str()));
+    // 宽字符入口：路径里有中文时 LoadLibraryA 会按 ANSI 解释而找不到文件。
+    return reinterpret_cast<void*>(::LoadLibraryW(path.wstring().c_str()));
 }
 
 void* find_symbol(void* module, const char* name) {
@@ -225,13 +226,16 @@ std::tm utc_time(const std::time_t* seconds) {
 }
 
 std::FILE* open_append(const std::filesystem::path& path) {
+    // _wfopen_s 直接用宽字符路径，中文路径不会因为 ANSI 转换失败而打不开；
+    // 用带 _s 的版本是为了通过 /WX 下的 C4996 检查。
     std::FILE* file = nullptr;
-    fopen_s(&file, path.string().c_str(), "a");
+    _wfopen_s(&file, path.wstring().c_str(), L"a");
     return file;
 }
 
 bool atomic_replace(const std::filesystem::path& src, const std::filesystem::path& dst) {
-    return ::MoveFileExA(src.string().c_str(), dst.string().c_str(),
+    // MoveFileExA 只认 ANSI；换宽字符版本，中文文件名才替换得掉。
+    return ::MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(),
                          MOVEFILE_REPLACE_EXISTING) != 0;
 }
 

@@ -1,7 +1,8 @@
 #include "ling/depgraph.hpp"
 
+#include "ling/manifest.hpp"
+
 #include <algorithm>
-#include <cctype>
 #include <deque>
 #include <set>
 
@@ -92,11 +93,10 @@ bool parse_requirement(const std::string& raw, Dependency* out) {
     if (id.empty()) {
         return false;
     }
-    for (const char ch : id) {
-        const auto uch = static_cast<unsigned char>(ch);
-        if (std::isalnum(uch) == 0 && ch != '-' && ch != '_') {
-            return false;
-        }
+    // 依赖里的插件编号必须和清单校验用同一套规则，否则 "Demo-A@1" 这种写法
+    // 永远匹配不到真正的 demo-a，插件会被静默判成缺依赖。
+    if (!valid_plugin_id(id)) {
+        return false;
     }
     out->id = id;
     if (at == std::string::npos) {
