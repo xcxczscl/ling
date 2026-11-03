@@ -1,8 +1,8 @@
 id = "core-ui"
-version = "1.0.0"
+version = "1.1.0-b1"
 api = "1"
 name = "本机界面"
-description = "用浏览器管理 ling：看插件、装卸启停、翻日志、改配置、管定时任务"
+description = "ling 的本机界面：侧边栏 + 功能区承载各插件的面板，另有插件、日志、配置、任务、外观、关于六个设置页签"
 capabilities = ["network"]
 
 [sidecar]

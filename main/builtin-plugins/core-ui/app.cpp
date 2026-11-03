@@ -19,12 +19,6 @@
 namespace ling {
 namespace {
 
-// 侧车的 LING_DATA_DIR 是「自己的数据目录」（<数据根>/plugins/core-ui/data），
-// 而界面要连宿主的管理端口，那里需要数据根。回退三级。
-std::filesystem::path data_root_from_sidecar(const std::string& data_dir) {
-    return std::filesystem::path(data_dir).parent_path().parent_path().parent_path();
-}
-
 // 往 stdout 写一帧。侧车的 stdout 只许写帧，调试信息一律走 stderr。
 void send_frame(const nlohmann::json& frame) {
     std::printf("%s\n", frame.dump().c_str());
@@ -36,7 +30,7 @@ void send_hello(const std::string& plugin_id, const std::string& token) {
     frame["v"] = sidecar::kProtocolVersion;
     frame["op"] = "hello";
     frame["plugin_id"] = plugin_id;
-    frame["plugin_version"] = "1.0.0";
+    frame["plugin_version"] = ui::ui_version();
     frame["token"] = token;
     send_frame(frame);
 }
@@ -154,11 +148,14 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
     // 侧车进程忽略 Ctrl+C：它的生命周期由宿主管，用户按 Ctrl+C 不该直接杀掉它。
     sys::register_ctrl_c([]() {});
 
-    const Args args = parse_args(argc, argv);
+    Args args = parse_args(argc, argv);
     if (args.help) {
         return 2;
     }
 
+    // 三样东西都由宿主经环境变量给：口令、端口、数据根。界面不自己推断数据根在哪，
+    // 也不读数据根下的其它文件（04-详细设计/01 §2.1）。--data-dir / --port 是手动
+    // 调试时的等价入口，与环境变量同时出现时以环境变量为准。
     std::filesystem::path data_root = args.data_dir;
     const std::string env_root = sys::read_env("LING_UI_ROOT");
     if (!env_root.empty()) {
@@ -170,25 +167,26 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
     const std::string plugin_id = sys::read_env("LING_PLUGIN_ID");
     app->sidecar = !sidecar_token.empty();
     if (app->sidecar) {
-        const std::string own_data = sys::read_env("LING_DATA_DIR");
-        if (!own_data.empty()) {
-            data_root = data_root_from_sidecar(own_data);
-        }
         send_hello(plugin_id, sidecar_token);
         std::thread reader(read_host_frames, app);
         reader.detach();
     }
 
-    // 口令用 session.json 里那个（浏览器能填的只有它）。握手用的侧车口令另算。
-    std::string token = sys::read_env("LING_UI_TOKEN");
+    // 口令只认宿主给的那一枚。读不到就是「没人拉我」——不猜、不去翻 session.json，
+    // 免得在没有宿主时绑上一个端口、把「宿主没起」表现成「界面空白」。
+    const std::string token = sys::read_env("LING_UI_TOKEN");
     if (token.empty()) {
-        std::string error;
-        if (!admin::read_token(data_root, &token, &error)) {
-            std::fprintf(stderr, "拿不到口令：%s\n", error.c_str());
-            std::fprintf(stderr, "这个程序要连上一个正在运行的 ling 宿主。先跑 ling serve。\n");
-            return 3;
+        std::fprintf(stderr, "没有 LING_UI_TOKEN。这个程序由 ling 宿主拉起，不要单独运行。\n");
+        return 3;
+    }
+
+    // 端口同理：宿主给 LING_UI_PORT，被占时从这里起顺延。
+    const std::string env_port = sys::read_env("LING_UI_PORT");
+    if (!env_port.empty()) {
+        const int value = std::atoi(env_port.c_str());
+        if (value > 0 && value < 65536) {
+            args.port = static_cast<std::uint16_t>(value);
         }
-        std::fprintf(stderr, "没有 LING_UI_TOKEN，改读 session.json 拿口令（调试用）。\n");
     }
 
     // 自检：绑上端口不代表能连上宿主。装载阶段拉起的界面自检会早到，
@@ -214,8 +212,8 @@ int ui_app_setup(int argc, char** argv, UiApp* app) {
 
     app->data_root = data_root;
     app->token = token;
-    app->server = std::make_unique<UiServer>();
-    UiServer::Options options;
+    app->server = std::make_unique<ui::UiServer>();
+    ui::UiServer::Options options;
     options.data_root = data_root;
     options.token = token;
     options.start_port = args.port;

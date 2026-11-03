@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ling</title>
+<!-- 令牌与布局分开：shell.css 只用 --ling-* 变量，不写死颜色，
+     切换主题只改 <html data-theme>（docs/ling/builtin-plugins/core-ui/04-详细设计/04 §3）。 -->
+<link rel="stylesheet" href="/shell.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div id="sidebar-head">
+      <span id="brand">ling</span>
+      <button id="btn-collapse" type="button" title="收起侧边栏" aria-label="收起侧边栏"></button>
+    </div>
+    <nav id="nav-views" aria-label="插件面板"></nav>
+    <div id="sidebar-foot">
+      <span id="host-state"><i class="state-dot"></i><span id="host-state-text">连接中</span></span>
+      <button id="btn-settings" type="button">设置</button>
+    </div>
+  </aside>
+
+  <main id="workspace">
+    <div id="panel-area"></div>
+    <div id="empty-state" hidden></div>
+  </main>
+
+  <section id="settings" hidden>
+    <header id="settings-head">
+      <span>设置</span>
+      <button id="btn-settings-close" type="button" title="关闭">×</button>
+    </header>
+    <div id="settings-main">
+      <nav id="settings-tabs" aria-label="设置页签"></nav>
+      <div id="settings-body"></div>
+    </div>
+  </section>
+</div>
+
+<div id="drag-hint" hidden></div>
+<div id="toast-host" aria-live="polite"></div>
+<div id="dialog-host" hidden></div>
+
+<script src="/shell.js"></script>
+<script src="/views/plugins.js"></script>
+<script src="/views/logs.js"></script>
+<script src="/views/config.js"></script>
+<script src="/views/jobs.js"></script>
+<script src="/views/appearance.js"></script>
+<script src="/views/about.js"></script>
+</body>
+</html>

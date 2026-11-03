@@ -15,7 +15,7 @@
 namespace ling {
 
 struct UiApp {
-    std::unique_ptr<UiServer> server;
+    std::unique_ptr<ui::UiServer> server;
     std::filesystem::path data_root;
     std::string token;
     std::string url;          // http://127.0.0.1:<端口>/?token=... ，给浏览器或窗口导航用

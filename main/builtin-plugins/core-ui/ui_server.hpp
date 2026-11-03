@@ -1,5 +1,8 @@
-// 界面进程的 HTTP 服务端：回环监听、口令认证、把 /api/<动作> 转成管理端口调用。
-// 语义依据 docs/ling/builtin-plugins/core-ui/02-服务端与接口.md。
+// 界面进程的 HTTP 服务端。
+//
+// 语义依据 docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md。
+// 四类路由：外壳静态文件（免认证）、面板资源（免认证）、theme.css（免认证）、
+// /api/*（bearer token）。有副作用的调用一律落在第四类。
 #pragma once
 
 #include <cstdint>
@@ -8,10 +11,7 @@
 #include <string>
 
 namespace ling {
-
-// 页面内容，构建期从 builtin-plugins/core-ui/page.html 嵌进来。
-const char* page_html();
-
+namespace ui {
 
 // 界面进程对外提供的那一层。它自己不碰内核，每个动作都转成一次管理端口调用，
 // 所以界面与命令行的行为永远一致（同一条调用路由、同一套错误码）。
@@ -51,4 +51,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// 界面进程自己的版本，写进「关于」页与 plugin.toml。
+const char* ui_version();
+
+}  // namespace ui
 }  // namespace ling
