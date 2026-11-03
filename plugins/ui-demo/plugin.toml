@@ -1,0 +1,11 @@
+id = "ui-demo"
+version = "0.1.0"
+api = "1"
+name = "界面自检"
+description = "测试插件：验证面板加载、调用链路、超时与错误回传（不属于内置插件）"
+capabilities = ["ui"]
+
+[ui]
+entry = "ui/index.html"
+title = "界面自检"
+icon = "ui/icon.svg"

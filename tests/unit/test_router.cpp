@@ -7,7 +7,10 @@
 #include <vector>
 
 #include "ling/errors.hpp"
+#include "ling/kernel.hpp"
 #include "ling/router.hpp"
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -106,4 +109,53 @@ TEST_CASE("批量注销按编号清空", "[router]") {
     const auto removed = router.unregister_all("demo-a");
     CHECK(removed.size() == 2);
     CHECK(router.size() == 1);
+}
+
+TEST_CASE("身份敏感方法用真实调用者覆盖 plugin", "[identity]") {
+    const std::string args = R"({"plugin":"demo-b","key":"demo-b.timeout","value":30})";
+    std::string rewritten;
+    REQUIRE(ling::rewrite_caller_plugin(
+        "core-settings.write", "demo-a", reinterpret_cast<const uint8_t*>(args.data()), args.size(),
+        &rewritten));
+
+    const auto parsed = nlohmann::json::parse(rewritten);
+    CHECK(parsed["plugin"] == "demo-a");
+    CHECK(parsed["key"] == "demo-b.timeout");
+    CHECK(parsed["value"] == 30);
+}
+
+TEST_CASE("身份敏感方法缺 plugin 时补上真实调用者", "[identity]") {
+    const std::string args = R"({"message":"hello"})";
+    std::string rewritten;
+    REQUIRE(ling::rewrite_caller_plugin("core-log.write", "demo-a",
+                                       reinterpret_cast<const uint8_t*>(args.data()), args.size(),
+                                       &rewritten));
+
+    const auto parsed = nlohmann::json::parse(rewritten);
+    CHECK(parsed["plugin"] == "demo-a");
+    CHECK(parsed["message"] == "hello");
+}
+
+TEST_CASE("身份改写处理空参数与非字符串 plugin", "[identity]") {
+    std::string rewritten;
+    CHECK_FALSE(ling::rewrite_caller_plugin("core-log.write", "demo-a", nullptr, 0, &rewritten));
+
+    const std::string args = R"({"plugin":42,"message":"hello"})";
+    REQUIRE(ling::rewrite_caller_plugin("core-log.write", "demo-a",
+                                       reinterpret_cast<const uint8_t*>(args.data()), args.size(),
+                                       &rewritten));
+    const auto parsed = nlohmann::json::parse(rewritten);
+    CHECK(parsed["plugin"] == "demo-a");
+    CHECK(parsed["message"] == "hello");
+}
+
+TEST_CASE("自报编号一致或方法不敏感时不改写", "[identity]") {
+    const std::string args = R"({"plugin":"demo-a","message":"hello"})";
+    std::string rewritten;
+    CHECK_FALSE(ling::rewrite_caller_plugin("core-log.write", "demo-a",
+                                            reinterpret_cast<const uint8_t*>(args.data()),
+                                            args.size(), &rewritten));
+    CHECK_FALSE(ling::rewrite_caller_plugin("demo-a.ping", "demo-a",
+                                            reinterpret_cast<const uint8_t*>(args.data()),
+                                            args.size(), &rewritten));
 }

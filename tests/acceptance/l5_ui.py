@@ -48,7 +48,9 @@ def main():
     results = []
 
     def check(name, ok, detail=""):
-        results.append(ok)
+        # 判定写成 `a and b` 时结果可能是非布尔值（例如版本号字符串），这里收成 bool，
+        # 否则最后 sum(results) 会撞上「int + str」。
+        results.append(bool(ok))
         print(("通过  " if ok else "失败  ") + name + ("  " + detail if detail else ""))
 
     def ling(*extra):
@@ -100,47 +102,84 @@ def main():
 
     base = f"http://127.0.0.1:{port}"
 
-    # 认证
-    status, body = http(base + "/api/health")
-    check("健康检查免认证", status == 200 and json.loads(body)["ok"], str(status))
-    status, _ = http(base + "/")
-    check("页面无口令回 401", status == 401, str(status))
-    status, body = http(base + "/?token=" + token)
-    check("页面带口令回 HTML", status == 200 and "<html" in body.lower(), str(status))
-    check("页面里有五个视图的导航",
-          all(word in body for word in ["插件", "日志", "配置", "任务", "设置"]), "")
-    status, _ = http(base + "/api/plugins", "POST")
+    # 认证：免认证的只有「GET 一个文件或一段常量」，有副作用的一律要 token
+    # （docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md §2.4）。
+    status, body = http(base + "/api/ui/theme.css")
+    check("theme.css 免认证", status == 200 and "--ling-bg:" in body, str(status))
+    status, body = http(base + "/")
+    check("外壳页免认证（口令在 URL 里才带进来）", status == 200 and "<html" in body.lower(),
+          str(status))
+    check("外壳页不内嵌插件数据",
+          "core-settings" not in body and "core-log" not in body, "")
+    check("外壳页有面板区与设置区",
+          'id="panel-area"' in body and 'id="settings-tabs"' in body and 'id="nav-views"' in body,
+          "")
+    status, _ = http(base + "/api/panels", "POST")
     check("接口无口令回 401", status == 401, str(status))
+    status, _ = http(base + "/api/panels", "GET", token)
+    check("接口只认 POST", status == 405, str(status))
+
+    # 面板资源五道检查：越界的几种写法都要落在 404，正常文件要读得出来。
+    # 先装一个带 [ui] 的测试插件，面板才有东西可指。
+    status, body = http(base + "/api/install", "POST", token,
+                        {"path": str(artifacts / "ui-demo")})
+    check("安装 ui-demo", status == 200 and json.loads(body)["ok"], body[:100])
+    status, body = http(base + "/panel/ui-demo/index.html")
+    check("面板文件可读", status == 200 and "<html" in body.lower(), str(status))
+    status, _ = http(base + "/panel/ui-demo/../../registry.json")
+    check("面板路径越界被拦", status == 404, str(status))
+    status, _ = http(base + "/panel/ui-demo/%2e%2e%2fregistry.json")
+    check("编码过的越界也被拦", status == 404, str(status))
+    status, _ = http(base + "/panel/nope/index.html")
+    check("不存在的面板回 404", status == 404, str(status))
 
     # 插件列表
     status, body = http(base + "/api/plugins", "POST", token)
-    ids = [item["id"] for item in json.loads(body)["result"]["plugins"]]
+    ids = [item["id"] for item in json.loads(body)["result"]]
     check("插件列表含五个内置", status == 200 and all(bid in ids for bid in BUILTINS), str(ids))
 
-    # 预览（只看不改）
-    status, body = http(base + "/api/plan", "POST", token, {})
-    check("预览接口可用", status == 200 and "steps" in json.loads(body)["result"], body[:80])
+    # 面板列表：只列带 [ui] 且已装载的
+    status, body = http(base + "/api/panels", "POST", token)
+    panels = json.loads(body)["result"]
+    check("面板列表只含 ui-demo",
+          status == 200 and [item["id"] for item in panels] == ["ui-demo"], str(panels))
+    check("面板条目带入口与状态",
+          bool(panels) and panels[0]["entry"] == "/panel/ui-demo/index.html"
+          and panels[0]["state"] == "running", str(panels[:1]))
 
-    # 装 / 停 / 启 / 卸 demo-a
-    status, body = http(base + "/api/install", "POST", token, {"path": str(artifacts / "demo-a")})
-    check("安装 demo-a", status == 200 and json.loads(body)["ok"], body[:100])
-    check("demo-a 已启用", state_of("demo-a") is not None and state_of("demo-a")["state"] == "activated",
-          str(state_of("demo-a")))
-    status, body = http(base + "/api/disable", "POST", token, {"id": "demo-a"})
-    check("停用 demo-a", status == 200 and state_of("demo-a")["state"] == "deactivated",
-          str(state_of("demo-a")))
-    status, body = http(base + "/api/enable", "POST", token, {"id": "demo-a"})
-    check("启用 demo-a", status == 200 and state_of("demo-a")["state"] == "activated",
-          str(state_of("demo-a")))
+    # 面板调用的两道闸：命名空间越界、面板不存在的插件
+    status, body = http(base + "/api/panel/call", "POST", token,
+                        {"plugin": "ui-demo", "method": "ui-demo.echo", "params": {"a": 1}})
+    check("面板调用通", status == 200 and json.loads(body)["result"]["pong"] is True, body[:80])
+    status, body = http(base + "/api/panel/call", "POST", token,
+                        {"plugin": "ui-demo", "method": "kernel.plugins"})
+    check("面板不能调别人的方法",
+          status == 403 and json.loads(body)["error"]["code"] == "E_UI_FORBIDDEN", body[:100])
+
+    # 停用之后面板从列表里消失，调用也调不动
+    status, _ = http(base + "/api/disable", "POST", token, {"id": "ui-demo"})
+    status, body = http(base + "/api/panels", "POST", token)
+    check("停用后面板标成 stopped",
+          json.loads(body)["result"][0]["state"] == "stopped", body[:100])
+    status, body = http(base + "/api/panel/call", "POST", token,
+                        {"plugin": "ui-demo", "method": "ui-demo.echo"})
+    check("停用后调不动", status == 403, str(status))
+    http(base + "/api/enable", "POST", token, {"id": "ui-demo"})
+
+    # 关于页的数据
+    status, body = http(base + "/api/meta", "POST", token)
+    meta = json.loads(body)["result"]
+    check("meta 带宿主与界面版本", status == 200 and meta["hostVersion"] and meta["uiVersion"],
+          str(meta))
 
     # 配置
-    status, body = http(base + "/api/config.set", "POST", token, {"key": "demo-x.timeout", "value": 30})
-    check("配置写入", status == 200 and json.loads(body)["ok"], body[:80])
-    status, body = http(base + "/api/config.get", "POST", token, {"key": "demo-x.timeout"})
+    status, body = http(base + "/api/config.set", "POST", token, {"key": "ui-demo.timeout", "value": 30})
+    check("配置写入", status == 200 and json.loads(body)["result"]["saved"] is True, body[:80])
+    status, body = http(base + "/api/config.get", "POST", token, {"key": "ui-demo.timeout"})
     check("配置读回", status == 200 and json.loads(body)["result"].get("value") == 30, body[:80])
-    status, body = http(base + "/api/config.list", "POST", token, {"prefix": "demo-x."})
-    check("配置列表", json.loads(body)["result"]["keys"] == ["demo-x.timeout"],
-          str(json.loads(body)["result"]["keys"]))
+    status, body = http(base + "/api/config.list", "POST", token, {"prefix": "ui-demo."})
+    keys = [item["key"] for item in json.loads(body)["result"]["items"]]
+    check("配置列表", keys == ["ui-demo.timeout"], str(keys))
     status, body = http(base + "/api/config.set", "POST", token, {"key": "badkey", "value": 1})
     check("无插件名前缀的键被拒", status == 400 and not json.loads(body)["ok"], str(status))
 
@@ -150,7 +189,7 @@ def main():
           and "时" in json.loads(body)["result"].get("reason", ""), body[:120])
     status, body = http(base + "/api/jobs.schedule", "POST", token,
                         {"name": "probe", "cron": "0 3 * * *", "method": "core-log.write",
-                         "args": {"plugin": "core-job", "level": "info", "message": "from ui"}})
+                         "params": {"plugin": "core-job", "level": "info", "message": "from ui"}})
     check("建定时任务", status == 200 and json.loads(body)["ok"], body[:80])
     status, body = http(base + "/api/jobs.list", "POST", token)
     check("任务列表含新任务",
@@ -158,13 +197,21 @@ def main():
     status, body = http(base + "/api/jobs.cancel", "POST", token, {"name": "probe"})
     check("取消任务", status == 200 and json.loads(body)["ok"], body[:80])
 
+    # 日志：宿主自己的与某个插件的，都是 {lines:[{ts,level,text}]}
+    status, body = http(base + "/api/logs", "POST", token, {"lines": 5})
+    lines = json.loads(body)["result"]["lines"]
+    check("宿主日志可读", status == 200 and isinstance(lines, list), body[:80])
+    check("日志行切成三段", not lines or all(
+        name in lines[-1] for name in ("ts", "level", "text")), str(lines[-1:]))
+
     # 孤儿扫描
     status, body = http(base + "/api/orphans", "POST", token, {})
-    check("孤儿扫描接口可用", status == 200 and "orphans" in json.loads(body)["result"], body[:80])
+    check("孤儿扫描接口可用", status == 200 and isinstance(json.loads(body)["result"], list),
+          body[:80])
 
-    # 卸载 demo-a（连数据）
-    status, body = http(base + "/api/uninstall", "POST", token, {"id": "demo-a", "purge": True})
-    check("卸载 demo-a", status == 200 and state_of("demo-a") is None, str(state_of("demo-a")))
+    # 卸载 ui-demo（连数据）
+    status, body = http(base + "/api/uninstall", "POST", token, {"id": "ui-demo", "purge": True})
+    check("卸载 ui-demo", status == 200 and state_of("ui-demo") is None, str(state_of("ui-demo")))
 
     # 界面崩溃后宿主不受影响、2 秒重启
     subprocess.run(["taskkill", "/IM", "core-ui.exe", "/F"],

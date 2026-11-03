@@ -56,6 +56,11 @@ struct PluginContext {
     std::string data_dir;  // 必须长期存活，data_dir() 返回它的 c_str()
 };
 
+// 进程内与侧车插件调用身份敏感方法时，用真实调用者覆盖参数里的 plugin。
+// 返回 true 表示 rewritten 是改写后的参数；管理端口不经过这条路径。
+bool rewrite_caller_plugin(const char* method, const std::string& caller, const uint8_t* args,
+                           size_t args_len, std::string* rewritten);
+
 // 侧车方法的代理上下文：路由表里存一个指针，调用时按 plugin_id + method 发 invoke。
 struct SidecarMethodCtx {
     class Kernel* kernel = nullptr;

@@ -13,6 +13,7 @@
 // 平台一多（将来还有 Android）会越叠越乱。集中到这里，业务代码只剩「我要做什么」。
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -139,12 +140,24 @@ void set_socket_timeout(socket_handle fd, int timeout_ms);
 // 本地时间。MSVC 的 localtime_s 与 POSIX 的 localtime_r 签名不同，这里统一。
 std::tm local_time(const std::time_t* seconds);
 
+// UTC 时间。MSVC 的 gmtime_s 与 POSIX 的 gmtime_r 签名不同，这里统一。
+std::tm utc_time(const std::time_t* seconds);
+
 // 以追加方式打开文件。MSVC 的 fopen_s 与 POSIX 的 fopen 签名不同，这里统一。
 std::FILE* open_append(const std::filesystem::path& path);
 
 // 原子地把 src 替换为 dst（覆盖已存在的 dst）。Windows 的 rename 不覆盖已存在目标，
 // 用 MoveFileEx 换「替换」语义；POSIX 的 rename 本身就是原子替换。
 bool atomic_replace(const std::filesystem::path& src, const std::filesystem::path& dst);
+
+// 文件指纹：把最后修改时间与文件大小折成一个 64 位数，用来判断「这个文件被改过没有」。
+// 取不到（不存在、没权限）返回 0，调用方把 0 当作「跳过」。
+//
+// 为什么不用 std::filesystem::last_write_time：MinGW 的 libstdc++ 把 FILETIME 折成
+// 纳秒时溢出成负数，分辨率退化到秒——实测同一文件 300 毫秒内改写两次，取回的值一模一样，
+// 于是「改清单后自动重算」永远不会触发。这里直接问系统要原始时间戳：
+// Windows 用 GetFileAttributesExW 拿 100 纳秒的 FILETIME，POSIX 用 stat 的 st_mtim。
+std::uint64_t file_stamp(const std::filesystem::path& path);
 
 // ---- 共享库后缀 ----
 

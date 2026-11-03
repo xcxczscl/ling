@@ -10,6 +10,14 @@
 
 namespace ling {
 
+// 界面进程专用的一组环境变量（docs/ling/builtin-plugins/core-ui/04-详细设计/01 §2.1）。
+// 只有 core-ui 拿得到：它要替浏览器去连管理端口，而别的侧车拿到口令就等于拿到整个管理端口。
+struct UiEnv {
+    std::string token;  // LING_UI_TOKEN，与 session.json 同一枚
+    std::string root;   // LING_UI_ROOT，数据根
+    std::string port;   // LING_UI_PORT，起始端口，占用时由界面自己顺延
+};
+
 class Sidecar {
 public:
     Sidecar();
@@ -22,10 +30,11 @@ public:
     // 口令只经环境变量传，命令行参数在进程列表里对所有用户可见（§8.4）。
     // args 是命令行参数（含引号），空表示只跑 executable 本身。
     // Python 侧车就是靠它把解释器和脚本拼起来。
+    // ui 只对 core-ui 生效，传空的那几项不设。
     std::string start(const std::filesystem::path& executable, const std::string& args,
                       const std::filesystem::path& working_dir, const std::string& plugin_id,
                       const std::string& token, const std::string& data_dir,
-                      const std::string& sdk_dir);
+                      const std::string& sdk_dir, const UiEnv& ui = {});
 
     bool send(const sidecar::Frame& frame, std::string* error);
 

@@ -22,6 +22,7 @@ std::filesystem::path executable_dir() {
 }
 
 std::string read_env(const char* name) {
+#if defined(_MSC_VER)
     char* value = nullptr;
     std::size_t length = 0;
     if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
@@ -30,6 +31,12 @@ std::string read_env(const char* name) {
     std::string result(value);
     std::free(value);
     return result;
+#else
+    // MinGW 没有 _dupenv_s。getenv 返回的是进程环境块的指针，只读一次即可，
+    // 这里的调用都发生在启动阶段，不涉及并发。
+    const char* value = std::getenv(name);
+    return value == nullptr ? std::string() : std::string(value);
+#endif
 }
 
 std::filesystem::path default_data_root() {
@@ -211,6 +218,12 @@ std::tm local_time(const std::time_t* seconds) {
     return local;
 }
 
+std::tm utc_time(const std::time_t* seconds) {
+    std::tm utc{};
+    gmtime_s(&utc, seconds);
+    return utc;
+}
+
 std::FILE* open_append(const std::filesystem::path& path) {
     std::FILE* file = nullptr;
     fopen_s(&file, path.string().c_str(), "a");
@@ -220,6 +233,28 @@ std::FILE* open_append(const std::filesystem::path& path) {
 bool atomic_replace(const std::filesystem::path& src, const std::filesystem::path& dst) {
     return ::MoveFileExA(src.string().c_str(), dst.string().c_str(),
                          MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
+std::uint64_t file_stamp(const std::filesystem::path& path) {
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (::GetFileAttributesExW(path.wstring().c_str(), GetFileExInfoStandard, &info) == 0) {
+        return 0;
+    }
+    // FILETIME 是 1601 年起的 100 纳秒计数，高 32 位秒、低 32 位零头，拼回来才是原值。
+    const std::uint64_t time = (static_cast<std::uint64_t>(info.ftLastWriteTime.dwHighDateTime) << 32) |
+                               info.ftLastWriteTime.dwLowDateTime;
+    const std::uint64_t size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) |
+                               info.nFileSizeLow;
+    // 两者都折进一个指纹：只有时间会漏掉「同一时刻改成长度不同的内容」，
+    // 只有大小会漏掉「换成等长的内容」，合起来够用。
+    std::uint64_t seed = 1469598103934665603ull;  // FNV-1a 的起点
+    for (const std::uint64_t part : {time, size}) {
+        for (int i = 0; i < 8; ++i) {
+            seed ^= (part >> (i * 8)) & 0xFFu;
+            seed *= 1099511628211ull;
+        }
+    }
+    return seed;
 }
 
 const char* shared_library_suffix() { return ".dll"; }

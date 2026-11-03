@@ -54,6 +54,21 @@ def main():
         """直接改已安装插件目录里的清单，模拟「换了依赖声明」。"""
         (data / "plugins" / plugin_id / "plugin.toml").write_text(text, encoding="utf-8")
 
+    def wait_state(plugin_id, want, limit=6.0):
+        """等状态变成 want 再断言。
+
+        调和是「200 毫秒合并窗口 + 一轮轮询」才会发生的，固定 sleep 1.5 秒在机器忙的时候
+        会赶在调和之前读，读到的还是旧状态——那是脚本的问题，不是调和的问题。
+        """
+        deadline = time.time() + limit
+        item = None
+        while time.time() < deadline:
+            item = state_of(plugin_id)
+            if item is not None and item.get("state") == want:
+                return item
+            time.sleep(0.2)
+        return item
+
     host = subprocess.Popen([str(exe), "serve", "--data-dir", str(data), "--port", "7900"],
                             stdout=host_log, stderr=subprocess.STDOUT)
     time.sleep(2)
@@ -118,15 +133,13 @@ def main():
     # 改清单自动重算：把 demo-b 的依赖改成装不上的，等它自己停
     manifest = (data / "plugins" / "demo-b" / "plugin.toml").read_text(encoding="utf-8")
     edit_manifest("demo-b", manifest.replace('plugins = ["demo-a@1"]', 'plugins = ["demo-x@1"]'))
-    time.sleep(1.5)   # 200 毫秒合并窗口 + 一轮轮询
-    item_b = state_of("demo-b")
+    item_b = wait_state("demo-b", "deactivated")
     check("改清单后自动重算，不用 reload",
           item_b["state"] == "deactivated" and "demo-x" in item_b.get("reason", ""),
           str(item_b)[:110])
 
     edit_manifest("demo-b", manifest)
-    time.sleep(1.5)
-    item_b = state_of("demo-b")
+    item_b = wait_state("demo-b", "activated")
     check("改回来也自动恢复", item_b["state"] == "activated", str(item_b)[:110])
 
     code, out = ling("uninstall", "demo-a")

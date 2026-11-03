@@ -30,6 +30,15 @@ inline constexpr const char* kShuttingDown = "E_SHUTTING_DOWN";
 inline constexpr const char* kLedgerFull = "E_LEDGER_FULL";
 inline constexpr const char* kCancelled = "E_CANCELLED";
 inline constexpr const char* kResidentLimit = "E_RESIDENT_LIMIT";
+
+// core-ui 的面板机制专用。语义见
+// docs/ling/builtin-plugins/core-ui/03-架构设计.md §9，
+// 取值登记在 docs/ling/plugin-support/01-插件装载与接口.md §5.2。
+inline constexpr const char* kUiPanelDecl = "E_UI_PANEL_DECL";
+inline constexpr const char* kUiPanelNotFound = "E_UI_PANEL_NOTFOUND";
+inline constexpr const char* kUiNotReady = "E_UI_NOT_READY";
+inline constexpr const char* kUiForbidden = "E_UI_FORBIDDEN";
+inline constexpr const char* kUiBusy = "E_UI_BUSY";
 }  // namespace err
 
 }  // namespace ling

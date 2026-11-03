@@ -1,6 +1,7 @@
 #include "ling/kernel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -13,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "ling/admin.hpp"
 #include "ling/depgraph.hpp"
 #include "ling/errors.hpp"
 #include "ling/gate.hpp"
@@ -26,6 +28,10 @@ namespace ling {
 namespace {
 
 Kernel* g_kernel = nullptr;  // 单进程单宿主，见 03 §5.1 的进程模型
+
+// 界面进程的起始端口。真正绑上哪个由界面自己定（占用就顺延）并写回 registry.json
+// 的 ui_port，宿主只给一个起点（docs/ling/builtin-plugins/core-ui/04-详细设计/05 §4.1）。
+constexpr std::uint16_t kUiStartPort = 8010;
 
 // ---------- 宿主函数表实现 ----------
 
@@ -83,6 +89,13 @@ int32_t host_call(void* ctx, const char* method, const uint8_t* args, size_t arg
     if (context == nullptr || method == nullptr) {
         return 1;
     }
+
+    std::string rewritten_args;
+    if (rewrite_caller_plugin(method, context->plugin_id, args, args_len, &rewritten_args)) {
+        args = reinterpret_cast<const uint8_t*>(rewritten_args.data());
+        args_len = rewritten_args.size();
+    }
+
     const CallOutcome outcome = context->kernel->call(method, args, args_len);
     if (!outcome.ok()) {
         return 2;
@@ -139,6 +152,66 @@ void host_free_buffer(void* ctx, uint8_t* p, size_t len) {
 
 }  // namespace
 
+// 身份敏感方法把 plugin 字段拼进命名空间或文件名，不能信调用方自报。
+// 进程内插件调用没有独立的调用者字段，只能由宿主用真实上下文编号覆盖。
+// 管理端口走的是 handle_kernel，不经过这里，仍保留显式指定 plugin 的管理能力。
+bool rewrite_caller_plugin(const char* method, const std::string& caller, const uint8_t* args,
+                           size_t args_len, std::string* rewritten) {
+    const bool identity_sensitive = std::strcmp(method, "core-settings.write") == 0 ||
+                                    std::strcmp(method, "core-log.write") == 0;
+    if (!identity_sensitive || args == nullptr || args_len == 0) {
+        return false;
+    }
+
+    nlohmann::json parsed;
+    try {
+        parsed = nlohmann::json::parse(args, args + args_len, nullptr, false);
+    } catch (...) {
+        log_warn("identity", std::string("插件 ") + caller + " 调用 " + method +
+                                " 的参数解析失败，未做身份改写");
+        return false;
+    }
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        log_warn("identity", std::string("插件 ") + caller + " 调用 " + method +
+                                " 的参数不是 JSON 对象，未做身份改写");
+        return false;
+    }
+
+    std::string reported;
+    if (parsed.contains("plugin")) {
+        reported = parsed["plugin"].is_string() ? parsed["plugin"].get<std::string>()
+                                                : std::string("(非字符串)");
+    } else {
+        reported = "(未填)";
+    }
+    if (reported == caller) {
+        return false;
+    }
+
+    // 自报值会进内核日志，先清掉换行并截断，避免一条日志被拆成多行或刷屏。
+    std::string shown = reported;
+    for (char& ch : shown) {
+        if (std::iscntrl(static_cast<unsigned char>(ch)) != 0) {
+            ch = ' ';
+        }
+    }
+    if (shown.size() > 64) {
+        shown = shown.substr(0, 64) + "...";
+    }
+
+    try {
+        parsed["plugin"] = caller;
+        *rewritten = parsed.dump();
+    } catch (...) {
+        log_warn("identity", std::string("插件 ") + caller + " 调用 " + method +
+                                " 的参数序列化失败，未做身份改写");
+        return false;
+    }
+    log_warn("identity", std::string("插件 ") + caller + " 调用 " + method + " 时自报 plugin=" +
+                            shown + "，已改为真实编号");
+    return true;
+}
+
 const char* state_name(PluginState state) {
     switch (state) {
         case PluginState::kInstalled:
@@ -171,6 +244,15 @@ ling_host_api Kernel::make_host_api() {
 
 Kernel::Kernel(std::filesystem::path data_root) : data_root_(std::move(data_root)) {
     std::error_code ec;
+    // 数据根一律落成绝对路径再往下传。命令行给的常是相对路径（run/x），而侧车的
+    // 工作目录被设成插件自己的目录，相对路径传到子进程里就换了基准点
+    // （docs/ling/builtin-plugins/core-ui/04-详细设计/05-进程形态与启动.md §3）。
+    const auto absolute_root = std::filesystem::absolute(data_root_, ec);
+    if (!ec) {
+        const auto canonical_root = std::filesystem::weakly_canonical(absolute_root, ec);
+        data_root_ = ec ? absolute_root.lexically_normal() : canonical_root;
+        ec.clear();
+    }
     std::filesystem::create_directories(plugins_dir(), ec);
     log_init(data_root_ / "logs");
     load_registry();
@@ -573,17 +655,14 @@ void Kernel::watch_tick() {
         if (!entry.is_directory()) {
             continue;
         }
-        const auto manifest = entry.path() / "plugin.toml";
-        if (!std::filesystem::exists(manifest, ec)) {
-            continue;
+        // 用清单的指纹（修改时间 + 大小）判断有没有被改过。改依赖、改版本、换产物
+        // 都会碰这个文件，所以一个指纹就够。取指纹走平台层：标准库的
+        // last_write_time 在 MinGW 上会溢出到秒，200 毫秒内的改动看不出来。
+        const std::uint64_t stamp = sys::file_stamp(entry.path() / "plugin.toml");
+        if (stamp == 0) {
+            continue;  // 没有清单：只剩 data/ 的目录算未安装
         }
-        // 用清单的修改时间做指纹：改依赖、改版本、换产物都会碰它。
-        const auto stamp = std::filesystem::last_write_time(manifest, ec);
-        if (ec) {
-            continue;
-        }
-        current[entry.path().filename().string()] =
-            static_cast<std::uint64_t>(stamp.time_since_epoch().count());
+        current[entry.path().filename().string()] = stamp;
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -1050,6 +1129,57 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         return reply;
     }
 
+    // kernel.panel_call：core-ui 代某个插件的面板调用它自己的方法。
+    //
+    // 与 kernel.call 分开的理由：那条是「管理动作」的窄白名单，只管三个内置插件；
+    // 面板要调的是业务插件的方法，白名单拦不住也不该放开。这条改成按前缀校验——
+    // 只能调 "<plugin>.*"，而 plugin 由 core-ui 按消息来源填，面板指定不了。
+    // 权限链因此是：面板只能调自己 → 外壳校验一次 → 宿主在这里再校验一次。
+    if (method == "kernel.panel_call") {
+        const std::string plugin = string_arg("plugin");
+        const std::string inner = string_arg("method");
+        if (plugin.empty() || !valid_plugin_id(plugin) || inner.empty()) {
+            reply.code = err::kProtocol;
+            reply.message = "panel_call 需要 plugin 与 method 两个字段";
+            return reply;
+        }
+        if (inner.rfind(plugin + ".", 0) != 0) {
+            reply.code = err::kUiForbidden;
+            reply.message = "面板不能调用 " + inner;
+            return reply;
+        }
+        // 插件当前必须可用：停用后它的面板即使还开着，也调不动任何方法。
+        const LoadedPlugin* target = find(plugin);
+        if (target == nullptr || target->state != PluginState::kActivated) {
+            reply.code = err::kUiForbidden;
+            reply.message = "插件 " + plugin + " 当前没有运行";
+            return reply;
+        }
+        std::string payload = "{}";
+        if (args.contains("params") && !args["params"].is_null()) {
+            if (!args["params"].is_object()) {
+                reply.code = err::kProtocol;
+                reply.message = "params 必须是对象";
+                return reply;
+            }
+            payload = args["params"].dump();
+        }
+        const CallOutcome outcome =
+            call(inner, reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+        if (!outcome.ok()) {
+            reply.code = outcome.code;
+            reply.message = "调用 " + inner + " 失败";
+            if (!outcome.detail.empty()) {
+                reply.message += "：" + outcome.detail;
+            } else if (!outcome.code.empty()) {
+                reply.message += "（" + outcome.code + "）";
+            }
+            return reply;
+        }
+        reply.result = std::string(outcome.data.begin(), outcome.data.end());
+        return reply;
+    }
+
     if (method == "kernel.plugins") {
         nlohmann::json list = nlohmann::json::array();
         for (const auto& plugin : plugins_) {
@@ -1274,23 +1404,70 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             reply.message = "插件 " + id + " 没有数据目录";
             return reply;
         }
+        // 三个可选参数给界面用：条数、级别过滤、上翻偏移。命令行只给 plugin，
+        // 这时行为与以前一样（40 条、不过滤）。参数交给 core-log 之前先夹住，
+        // 别让界面要一万条。
+        int count = 40;
+        if (args.contains("lines") && args["lines"].is_number_integer()) {
+            count = args["lines"].get<int>();
+        }
+        if (count < 1) {
+            count = 1;
+        }
+        if (count > 1000) {
+            count = 1000;
+        }
+        int before = 0;
+        if (args.contains("before") && args["before"].is_number_integer()) {
+            before = args["before"].get<int>();
+        }
+        if (before < 0) {
+            before = 0;
+        }
+        if (before > 10000) {
+            before = 10000;
+        }
+        const std::string level = string_arg("level");
         // core-log 在时优先问它（04/06 §5.5 的第一条路径），不在时退回读 data/ 下的 .log。
-        if (find("core-log") != nullptr && router_.contains("core-log.tail")) {
-            nlohmann::json request;
-            request["plugin"] = id;
-            request["n"] = 40;
-            const std::string text = request.dump();
-            const CallOutcome outcome = call("core-log.tail",
-                                             reinterpret_cast<const std::uint8_t*>(text.data()),
-                                             text.size());
-            if (outcome.ok()) {
-                const std::string tail_text(outcome.data.begin(), outcome.data.end());
-                const auto parsed = nlohmann::json::parse(tail_text, nullptr, false);
-                // core-log 里没有这个插件的记录时退回 data/，不然「日志为空」会被当成真的没有。
-                if (!parsed.is_discarded() && parsed.contains("lines") &&
-                    !parsed["lines"].empty()) {
-                    reply.result = tail_text;
-                    return reply;
+        if (find("core-log") != nullptr) {
+            // 有级别过滤走 query（逐行筛），否则走 tail（只读末尾几行）。
+            const std::string target = level.empty() ? "core-log.tail" : "core-log.query";
+            if (router_.contains(target)) {
+                nlohmann::json request;
+                request["plugin"] = id;
+                if (level.empty()) {
+                    request["n"] = count + before;
+                } else {
+                    request["level"] = level;
+                }
+                const std::string text = request.dump();
+                const CallOutcome outcome = call(
+                    target, reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+                if (outcome.ok()) {
+                    const std::string tail_text(outcome.data.begin(), outcome.data.end());
+                    auto parsed = nlohmann::json::parse(tail_text, nullptr, false);
+                    // core-log 里没有这个插件的记录时退回 data/，不然「日志为空」会被当成真的没有。
+                    if (!parsed.is_discarded() && parsed.contains("lines") &&
+                        parsed["lines"].is_array() && !parsed["lines"].empty()) {
+                        auto& lines = parsed["lines"];
+                        // query 返回的是整份日志，界面只要末尾 count 条，再往前翻 before 条。
+                        const std::size_t keep = static_cast<std::size_t>(count);
+                        if (lines.size() > keep) {
+                            lines.erase(lines.begin(),
+                                        lines.end() - static_cast<std::ptrdiff_t>(keep));
+                        }
+                        if (before > 0) {
+                            const auto drop = static_cast<std::size_t>(before);
+                            if (lines.size() > drop) {
+                                lines.erase(lines.end() - static_cast<std::ptrdiff_t>(drop),
+                                            lines.end());
+                            } else {
+                                lines = nlohmann::json::array();
+                            }
+                        }
+                        reply.result = parsed.dump();
+                        return reply;
+                    }
                 }
             }
         }
@@ -1312,7 +1489,18 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
         nlohmann::json result;
         result["plugin"] = id;
         result["path"] = latest.empty() ? std::string() : latest.string();
-        result["lines"] = latest.empty() ? nlohmann::json::array() : tail_lines(latest, 40);
+        auto lines = latest.empty()
+                         ? nlohmann::json::array()
+                         : tail_lines(latest, static_cast<std::size_t>(count + before));
+        if (before > 0) {
+            const auto drop = static_cast<std::size_t>(before);
+            if (lines.size() > drop) {
+                lines.erase(lines.end() - static_cast<std::ptrdiff_t>(drop), lines.end());
+            } else {
+                lines = nlohmann::json::array();
+            }
+        }
+        result["lines"] = lines;
         reply.result = result.dump();
         return reply;
     }
@@ -1441,9 +1629,21 @@ std::string Kernel::activate_sidecar(LoadedPlugin& plugin) {
     plugin.sidecar = true;
     plugin.sidecar_token = make_sidecar_token();
     plugin.process = std::make_unique<Sidecar>();
+    // 界面进程要替浏览器去连管理端口，那枚口令是会话口令（session.json 里那枚），
+    // 跟侧车握手口令是两回事，不能拿这一枚顶替。只给 core-ui。
+    // 数据根与起始端口一起给：界面不自己推断数据根在哪（core-ui/04-01 §2.1）。
+    UiEnv ui_env;
+    if (plugin.manifest.id == "core-ui") {
+        std::string token_error;
+        if (!admin::read_token(data_root_, &ui_env.token, &token_error)) {
+            ui_env.token.clear();
+        }
+        ui_env.root = data_root_.string();
+        ui_env.port = std::to_string(kUiStartPort);
+    }
     const std::string start_error =
         plugin.process->start(exe, exe_args, dir, plugin.manifest.id, plugin.sidecar_token,
-                              data_dir.string(), sdk_dir.string());
+                              data_dir.string(), sdk_dir.string(), ui_env);
     if (!start_error.empty()) {
         plugin.process.reset();
         plugin.sidecar = false;
@@ -1605,7 +1805,13 @@ bool Kernel::handle_sidecar_frame(LoadedPlugin& plugin, const sidecar::Frame& fr
                                            frame.fields["method"].is_string()
                                        ? frame.fields["method"].get<std::string>()
                                        : std::string();
-        const std::string args = frame.fields.contains("args") ? frame.fields["args"].dump() : "{}";
+        std::string args = frame.fields.contains("args") ? frame.fields["args"].dump() : "{}";
+        std::string rewritten_args;
+        if (rewrite_caller_plugin(method.c_str(), plugin.manifest.id,
+                                  reinterpret_cast<const std::uint8_t*>(args.data()), args.size(),
+                                  &rewritten_args)) {
+            args = std::move(rewritten_args);
+        }
         const CallOutcome outcome =
             call(method, reinterpret_cast<const std::uint8_t*>(args.data()), args.size());
         std::string error;

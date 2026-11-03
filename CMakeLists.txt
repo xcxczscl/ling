@@ -31,7 +31,10 @@ enable_testing()
 
 add_subdirectory(third_party)
 add_subdirectory(main)
-add_subdirectory(plugins)
+# plugins/ 允许为空：没有插件时不加入构建。
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/CMakeLists.txt")
+    add_subdirectory(plugins)
+endif()
 add_subdirectory(tests)
 
 message(STATUS "ling ${LING_VERSION} | preset=${LING_PRESET} | 输出目录=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")

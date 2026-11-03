@@ -1,0 +1,57 @@
+/* 面板自己的样式：只用 --ling-* 令牌，切主题时跟着变。 */
+body {
+  margin: 0;
+  padding: var(--ling-sp-4);
+  background: var(--ling-bg);
+  color: var(--ling-text);
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: var(--ling-fs-md);
+}
+h1 {
+  font-size: var(--ling-fs-xl);
+  margin: 0 0 var(--ling-sp-2);
+}
+.hint {
+  color: var(--ling-text-dim);
+  margin: 0 0 var(--ling-sp-4);
+}
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ling-sp-2);
+  margin-bottom: var(--ling-sp-4);
+}
+button {
+  font: inherit;
+  color: var(--ling-text);
+  background: var(--ling-bg-raised);
+  border: 1px solid var(--ling-border-strong);
+  border-radius: var(--ling-radius-sm);
+  padding: var(--ling-sp-1) var(--ling-sp-3);
+  cursor: pointer;
+}
+button:hover {
+  border-color: var(--ling-accent);
+}
+.drop {
+  border: 1px dashed var(--ling-border-strong);
+  border-radius: var(--ling-radius);
+  padding: var(--ling-sp-5);
+  text-align: center;
+  color: var(--ling-text-dim);
+  margin-bottom: var(--ling-sp-3);
+  background: var(--ling-bg-sunken);
+}
+pre#log {
+  margin: 0;
+  padding: var(--ling-sp-2);
+  background: var(--ling-bg-sunken);
+  border: 1px solid var(--ling-border);
+  border-radius: var(--ling-radius-sm);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--ling-fs-sm);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

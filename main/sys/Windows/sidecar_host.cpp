@@ -21,7 +21,7 @@ Sidecar::~Sidecar() { terminate(200); }
 std::string Sidecar::start(const std::filesystem::path& executable, const std::string& args,
                            const std::filesystem::path& working_dir, const std::string& plugin_id,
                            const std::string& token, const std::string& data_dir,
-                           const std::string& sdk_dir) {
+                           const std::string& sdk_dir, const UiEnv& ui) {
     SECURITY_ATTRIBUTES attributes{};
     attributes.nLength = sizeof(attributes);
     attributes.bInheritHandle = TRUE;
@@ -71,13 +71,26 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
     //
     // 自己拼环境块容易被一个格式细节拖进「错误码 87」这种没线索的坑里，
     // 改成「临时设几项 → 起进程 → 还原」。宿主是单线程内核，不存在并发读写环境的问题。
-    const wchar_t* names[4] = {L"LING_TOKEN", L"LING_PLUGIN_ID", L"LING_DATA_DIR",
-                               L"LING_SDK_DIR"};
-    const std::wstring values[4] = {sys::utf8_to_wide(token), sys::utf8_to_wide(plugin_id),
-                                    sys::utf8_to_wide(data_dir), sys::utf8_to_wide(sdk_dir)};
-    std::wstring previous[4];
-    bool had_previous[4] = {false, false, false, false};
-    for (int i = 0; i < 4; ++i) {
+    //
+    // 第五到第七项只给 core-ui：它要拿同一枚口令去连管理端口，还得知道数据根与
+    // 起始端口（docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md §2.1）。
+    // 其他侧车拿不到这枚口令——那等于把整个管理端口交给它们。
+    // 这枚口令是管理端口的，不是侧车握手口令，两者不能混用。
+    const bool is_ui = plugin_id == "core-ui";
+    const wchar_t* names[7] = {L"LING_TOKEN",   L"LING_PLUGIN_ID",  L"LING_DATA_DIR",
+                               L"LING_SDK_DIR", L"LING_UI_TOKEN",   L"LING_UI_ROOT",
+                               L"LING_UI_PORT"};
+    const std::wstring values[7] = {
+        sys::utf8_to_wide(token),
+        sys::utf8_to_wide(plugin_id),
+        sys::utf8_to_wide(data_dir),
+        sys::utf8_to_wide(sdk_dir),
+        is_ui ? sys::utf8_to_wide(ui.token) : std::wstring(),
+        is_ui ? sys::utf8_to_wide(ui.root) : std::wstring(),
+        is_ui ? sys::utf8_to_wide(ui.port) : std::wstring()};
+    std::wstring previous[7];
+    bool had_previous[7] = {false, false, false, false, false, false, false};
+    for (int i = 0; i < 7; ++i) {
         const DWORD size = ::GetEnvironmentVariableW(names[i], nullptr, 0);
         if (size > 0) {
             previous[i].resize(size);
@@ -93,7 +106,7 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
                                      cwd.empty() ? nullptr : cwd.c_str(), &startup, &info);
 
     // 起完立刻还原，免得这几个变量漏到后续起的别的进程里。
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 7; ++i) {
         ::SetEnvironmentVariableW(names[i], had_previous[i] ? previous[i].c_str() : nullptr);
     }
     ::CloseHandle(child_stdin_read);

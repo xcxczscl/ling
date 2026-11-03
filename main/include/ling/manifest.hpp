@@ -23,6 +23,14 @@ struct SidecarSpec {
     bool present = false;        // 清单里是否有 [sidecar] 段
 };
 
+// [ui] 段。一个插件最多一个面板，所以这里是单段而不是数组。
+struct UiSpec {
+    bool present = false;
+    std::string entry;   // 相对插件目录，必须落在 ui/ 下，后缀 .html
+    std::string title;   // 1 至 32 字符
+    std::string icon;    // 可空；相对插件目录，落在 ui/ 下，.svg 或 .png
+};
+
 struct Manifest {
     std::string id;
     std::string version;
@@ -33,6 +41,10 @@ struct Manifest {
     std::vector<std::string> capabilities;
     std::vector<std::string> requires_plugins;
     SidecarSpec sidecar;
+
+    // [ui] 段：声明本插件贡献一个面板（docs/ling/builtin-plugins/core-ui/04-详细设计/03 §1）。
+    // 校验通过只说明字段合法，entry 指向的文件不在这里检查存在性。
+    UiSpec ui;
 
     // 产物路径（进程内轨道），相对插件目录。
     std::string artifact;

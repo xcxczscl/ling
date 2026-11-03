@@ -24,7 +24,7 @@ Sidecar::~Sidecar() { terminate(200); }
 std::string Sidecar::start(const std::filesystem::path& executable, const std::string& args,
                            const std::filesystem::path& working_dir, const std::string& plugin_id,
                            const std::string& token, const std::string& data_dir,
-                           const std::string& sdk_dir) {
+                           const std::string& sdk_dir, const UiEnv& ui) {
     // POSIX 的文件描述符用 -1 作「无效」哨兵（fd 0 是合法的，比如宿主关了 stdin 时
     // pipe 就会拿到 0）。Windows 用 nullptr（0）作哨兵，两边语义不同，各写各的。
     stdin_write_ = -1;
@@ -66,6 +66,18 @@ std::string Sidecar::start(const std::filesystem::path& executable, const std::s
         ::setenv("LING_PLUGIN_ID", plugin_id.c_str(), 1);
         ::setenv("LING_DATA_DIR", data_dir.c_str(), 1);
         ::setenv("LING_SDK_DIR", sdk_dir.c_str(), 1);
+        // 只有 core-ui 拿得到这三项：口令是管理端口的，不是侧车握手口令。
+        if (plugin_id == "core-ui") {
+            if (!ui.token.empty()) {
+                ::setenv("LING_UI_TOKEN", ui.token.c_str(), 1);
+            }
+            if (!ui.root.empty()) {
+                ::setenv("LING_UI_ROOT", ui.root.c_str(), 1);
+            }
+            if (!ui.port.empty()) {
+                ::setenv("LING_UI_PORT", ui.port.c_str(), 1);
+            }
+        }
         if (!working_dir.empty()) {
             ::chdir(working_dir.c_str());
         }

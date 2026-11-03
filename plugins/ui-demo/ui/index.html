@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>界面自检</title>
+<!-- 令牌走 core-ui 的 theme.css：三段取值一次给全，切主题只改 data-theme。 -->
+<link rel="stylesheet" href="/api/ui/theme.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>界面自检</h1>
+<p class="hint">这个面板用来验证 core-ui 的加载、调用、超时、错误回传与主题跟随。</p>
+
+<div class="grid">
+  <button id="btn-echo" type="button">调用 echo</button>
+  <button id="btn-boom" type="button">调用 boom（应当失败）</button>
+  <button id="btn-sleep" type="button">调用 sleep 40 秒（应当超时）</button>
+  <button id="btn-other" type="button">调用别人的方法（应当被拦）</button>
+  <button id="btn-drag" type="button">发起一次拖拽</button>
+</div>
+
+<div class="drop" id="drop">把拖拽内容放到这里（本面板即是目标）</div>
+<pre id="log"></pre>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -6,6 +6,7 @@ add_executable(ling_unit
     unit/test_event.cpp
     unit/test_depgraph.cpp
     unit/test_sidecar_proto.cpp
+    unit/test_sys.cpp
 )
 
 target_link_libraries(ling_unit PRIVATE ling_core ling_catch2)

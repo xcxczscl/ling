@@ -15,7 +15,7 @@
 namespace {
 
 std::string env_or_empty(const char* name) {
-#ifdef _WIN32
+#if defined(_MSC_VER)
     char* value = nullptr;
     std::size_t size = 0;
     if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
@@ -25,6 +25,7 @@ std::string env_or_empty(const char* name) {
     std::free(value);
     return result;
 #else
+    // MinGW 没有 _dupenv_s，getenv 够用：示例进程不需要「取不到就报错」的区分。
     const char* value = std::getenv(name);
     return value == nullptr ? std::string() : std::string(value);
 #endif

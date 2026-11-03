@@ -9,6 +9,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 namespace ling {
@@ -159,6 +160,12 @@ std::tm local_time(const std::time_t* seconds) {
     return local;
 }
 
+std::tm utc_time(const std::time_t* seconds) {
+    std::tm utc{};
+    gmtime_r(seconds, &utc);
+    return utc;
+}
+
 std::FILE* open_append(const std::filesystem::path& path) {
     return std::fopen(path.string().c_str(), "a");
 }
@@ -167,6 +174,24 @@ bool atomic_replace(const std::filesystem::path& src, const std::filesystem::pat
     std::error_code ec;
     std::filesystem::rename(src, dst, ec);
     return !ec;
+}
+
+std::uint64_t file_stamp(const std::filesystem::path& path) {
+    struct stat info {};
+    if (::stat(path.c_str(), &info) != 0) {
+        return 0;
+    }
+    const std::uint64_t time = static_cast<std::uint64_t>(info.st_mtim.tv_sec) * 1000000000ull +
+                               static_cast<std::uint64_t>(info.st_mtim.tv_nsec);
+    const std::uint64_t size = static_cast<std::uint64_t>(info.st_size);
+    std::uint64_t seed = 1469598103934665603ull;  // FNV-1a 的起点
+    for (const std::uint64_t part : {time, size}) {
+        for (int i = 0; i < 8; ++i) {
+            seed ^= (part >> (i * 8)) & 0xFFu;
+            seed *= 1099511628211ull;
+        }
+    }
+    return seed;
 }
 
 const char* shared_library_suffix() { return ".so"; }

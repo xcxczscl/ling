@@ -297,6 +297,25 @@ def case_l2_uninstall(h):
     h.check("TC-110", not plugin_dir.exists(), str(plugin_dir))
 
 
+def build_type_of(preset):
+    """读构建目录里缓存的 CMAKE_BUILD_TYPE。
+
+    性能项能不能判定，只取决于二进制是哪种构建，跟预设叫什么名字无关——
+    本地自建的预设（比如把产物放到 run/dev）同样是 Debug，按名字猜会误判。
+    读不到缓存时退回按名字猜，再猜不出就当作非 release。
+    """
+    cache = ROOT / "run" / "build" / preset / "CMakeCache.txt"
+    try:
+        for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("CMAKE_BUILD_TYPE:"):
+                return line.partition("=")[2].strip()
+    except OSError:
+        pass
+    if "release" in preset:
+        return "Release"
+    return "Debug"
+
+
 def case_l1_bench_call(h, p95_limit=1.0, p99_limit=3.0):
     """089：调用延迟。基准在 debug 构建上跑，阈值按 docs/ling/07 §4.7 的口径记录。"""
     h.cli("install", str(h.artifacts / "demo-a"))
@@ -324,9 +343,11 @@ def case_l1_bench_call(h, p95_limit=1.0, p99_limit=3.0):
     with open(history, "a", encoding="utf-8") as handle:
         handle.write(f"{stamp}, l1_bench_call, {line.replace(' ', ', ')}, build={h.preset}\n")
 
-    if "debug" in h.preset:
+    build_type = build_type_of(h.preset)
+    if build_type.lower() != "release":
         # 调试构建带 ASan，单次调用有十几倍开销，按 07 §5.3 的口径只在 release 上判定。
-        h.skip("TC-089", f"debug 构建不判定，实测 p95={p95}us p99={p99}us，请用 --preset win-release")
+        h.skip("TC-089", f"{build_type or '未知'} 构建不判定，实测 p95={p95}us p99={p99}us，"
+                         f"请用 --preset win-release")
         return
     # 07 §5.4：超过上限 1.1 倍判失败，1.0 至 1.1 倍只记警告。
     h.check("TC-089/p95", p95 <= p95_limit * 1.1, f"p95={p95}us 上限 {p95_limit}us")

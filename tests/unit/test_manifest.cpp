@@ -56,6 +56,15 @@ TEST_CASE("版本号三段式与范围", "[manifest]") {
     CHECK_FALSE(ling::valid_version("70000.0.0"));
 }
 
+TEST_CASE("构建号后缀", "[manifest]") {
+    CHECK(ling::valid_version("1.0.0-b1"));
+    CHECK(ling::valid_version("1.0.0-b999"));
+    CHECK_FALSE(ling::valid_version("1.0.0-b"));
+    CHECK_FALSE(ling::valid_version("1.0.0-bx"));
+    CHECK_FALSE(ling::valid_version("1.0.0-b1.0"));
+    CHECK_FALSE(ling::valid_version("1.0.0-b1234567890"));
+}
+
 TEST_CASE("min_host 比较", "[manifest]") {
     CHECK(ling::version_at_least("0.0.1", "0.0.1"));
     CHECK(ling::version_at_least("0.1.0", "0.0.9"));
