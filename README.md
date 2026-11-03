@@ -34,11 +34,11 @@ M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「�
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
 | ling 宿主（`main/`） | 已定稿（00–11 共 18 份） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
-| 内置插件（`main/builtin-plugins/`） | 已定稿（builtin-plugins/00） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
+| 内置插件（`main/builtin-plugins/`） | 已定稿（docs/ling/README.md） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
 | 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（plugin-support/01 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
 | Python SDK（`main/SDK/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
 | 界面（`main/builtin-plugins/core-ui/`） | 已定稿（`builtin-plugins/core-ui/`） | `core-ui`：第五个内置插件；`webui`（浏览器）与 `desktop`（WebView2 窗口）两种形态 |
-| 示例插件（`plugins/`） | —— | `demo-a`、`demo-caller`、`demo-bench`、`demo-b`；侧车示例 `demo-sidecar`（C++）、`demo-py`（Python） |
+| 第三方插件（`plugins/`） | 各插件自己的 `docs/plugins/<插件名>/` | 目前没有插件；示例插件已删除 |
 
 MVP 能跑通的最短路径：
 
@@ -62,7 +62,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 技术栈（见 [`docs/ling/main/02-技术选型.md`](docs/ling/main/02-技术选型.md)）：宿主与进程内插件用 C++17；侧车插件可用任意语言，core-ui 用 C++ 写成侧车。
 
-改文档的规矩见 [`AGENTS.md`](AGENTS.md)：需求到设计到测试的引用一律写完整路径，改完跑 `tools/` 下三个校验脚本。
+改文档的规矩见 [`RULES.md`](RULES.md)（必须遵守的硬规则）和 [`AGENTS.md`](AGENTS.md)（协作方式）：需求到设计到测试的引用一律写完整路径，改完跑 `tools/` 下三个校验脚本。
 
 ---
 
@@ -76,7 +76,9 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 |---|---|
 | `CMakeLists.txt` | 顶层构建入口：版本号、产物落点 `run/<preset>/`、统一编译选项，引用 third_party / main / plugins / tests |
 | `CMakePresets.json` | 构建预设：win-debug、win-release、linux-debug、linux-release、android-release |
-| `AGENTS.md` | 协作规则（先问、文档先行、改动边界、提交规范） |
+| `RULES.md` | 硬规则（红线、改动边界、Git 强制项、依赖、测试、密钥、审核约束） |
+| `AGENTS.md` | 协作方式（先问、工作流程、提交与推送、审核、沟通、汇报） |
+| `archive/` | 正式版发行归档（7z），不进版本库 |
 | `.clang-format` / `.clang-tidy` | 代码格式化与静态检查配置 |
 | `.gitignore` | 忽略构建产物（run/、dist/）与大体积第三方包 |
 | `README.md` | 本文件 |
@@ -94,6 +96,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | `main/sys/` | 平台抽象层：Windows 与 POSIX 各一份实现，业务代码只 include `ling/sys.hpp` |
 | `main/SDK/python/` | Python 侧车 SDK（ling_sidecar.py），随宿主分发 |
 | `main/builtin-plugins/` | 五个内置插件：core-settings、core-plugin-manager、core-log、core-job、core-ui，每个有自己的 CMakeLists.txt |
+| `main/archive/` | 源码归档：`main/<宿主版本>/`、`builtin-plugins/<插件名>/<插件版本>/` |
 
 `main/sys/` 是平台抽象层：所有「和操作系统打交道」的动作（取可执行文件目录、读环境变量、动态库加载、套接字、起子进程、控制台、打开浏览器）都收口在这里，业务代码不再写 `#ifdef _WIN32`。
 
@@ -123,18 +126,11 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 `main/` 目录下的每个文件做什么，见 [`main/README.md`](main/README.md)（比这里更细）。
 
-### plugins/ — 示例插件
+### plugins/ — 第三方插件
 
-用来演示和验证宿主能力的插件，不属于正式功能。
+插件源码与安装产物，一个插件一个子目录。源码归档在 `plugins/archive/<插件名>/<插件版本>/`，文档在 `docs/plugins/<插件名>/`。
 
-| 插件 | 作用 |
-|---|---|
-| `demo-a` | 最小示例：注册 `demo-a.ping`，返回 pong |
-| `demo-caller` | 调用方示例：激活时调 `demo-a.ping`，验证调用通路 |
-| `demo-b` | 依赖演示：声明依赖 `demo-a@1`，验证先装依赖自动激活 |
-| `demo-bench` | 调用延迟基准：10 万次调用输出 P50/P95/P99 |
-| `demo-sidecar` | C++ 侧车示例：独立进程，注册 `demo-sidecar.ping` 并订阅 kernel.tick |
-| `demo-py` | Python 侧车示例：同上，用 Python 写 |
+目前没有插件。之前的示例插件（demo-a、demo-caller、demo-bench、demo-b、demo-sidecar、demo-py）已删除。
 
 ### tests/ — 测试
 
@@ -149,6 +145,8 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | 文件 | 作用 |
 |---|---|
 | `check_docs.py` / `check_refs.py` / `cross_check.py` | 文档一致性校验，改完文档要跑 |
+| `release_archive.py` | 生成正式版发行归档（7z），输出到根 `archive/` |
+| `clean_gitkeep.py` | 删除占位用的 `.gitkeep` |
 | `embed.py` | 把 page.html 转成字符串嵌进 core-ui |
 | `package.py` | 打包：便携 zip、Inno Setup 安装包 |
 | `cmake/LingOptions.cmake` | 统一编译选项（所有目标共用） |
@@ -172,18 +170,19 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 | `run/<preset>/` | 构建产物：ling.exe、五个内置插件、Python 运行时；win-release 是打包用的 Release 版 |
 | `dist/` | 打包结果：便携 zip、安装包 exe、Inno 脚本 |
 
-### other/ 与 old/
+### archive/、other/ 与 old/
 
 | 目录 | 作用 |
 |---|---|
-| `other/` | 本地杂项（学习材料、存档），不进版本库，未经点名不碰 |
-| `old/` | 旧版本内容，只作参考，不改不删 |
+| `archive/` | 正式版发行归档（7z），不进版本库 |
+| `other/` | 本地杂项（学习材料、临时文件），不进版本库，未经点名不碰 |
+| `old/` | 旧版本内容，只作参考，不改不删，不进版本库 |
 
 ---
 
 ## 文档怎么读
 
-**只想查一件事，不用从头读**：打开 [`docs/common/03-文档导航与关键事实.md`](docs/common/03-文档导航与关键事实.md)，按问题找到对应章节，那里也集中了端口、阈值、事件字段这类跨文档常查的事实。
+**只想查一件事，不用从头读**：打开 [`docs/README.md`](docs/README.md)，按问题找到该读哪份文档；端口、路径、上限这类常查的取值在 [`docs/common/03-常用取值速查.md`](docs/common/03-常用取值速查.md)。
 
 要从头理解，按这个顺序：
 
@@ -194,7 +193,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 5. [`docs/ling/main/02-技术选型.md`](docs/ling/main/02-技术选型.md) — 用什么语言、插件怎么装、为什么这么选
 6. [`docs/ling/main/03-架构设计.md`](docs/ling/main/03-架构设计.md) — 分成哪几块、状态放哪、谁改谁读
 7. `docs/ling/main/04-详细设计/` — 七份实现级设计：
-   [01 内核四服务](docs/ling/main/04-详细设计/01-内核四服务.md) · [02 插件装载与接口](docs/ling/plugin-support/01-插件装载与接口.md) · [03 上下文与效应账本](docs/ling/plugin-support/02-上下文与效应账本.md) · [04 依赖解析与调和](docs/ling/main/04-详细设计/02-依赖解析与调和.md) · [05 热更新](docs/ling/main/04-详细设计/03-热更新.md) · [06 管理端口与命令行](docs/ling/main/04-详细设计/04-管理端口与命令行.md) · [07 内置插件](docs/ling/builtin-plugins/00-内置插件总览.md)
+   [01 内核四服务](docs/ling/main/04-详细设计/01-内核四服务.md) · [02 插件装载与接口](docs/ling/plugin-support/01-插件装载与接口.md) · [03 上下文与效应账本](docs/ling/plugin-support/02-上下文与效应账本.md) · [04 依赖解析与调和](docs/ling/main/04-详细设计/02-依赖解析与调和.md) · [05 热更新](docs/ling/main/04-详细设计/03-热更新.md) · [06 管理端口与命令行](docs/ling/main/04-详细设计/04-管理端口与命令行.md) · [07 内置插件](docs/ling/README.md)
 8. [`docs/ling/main/05-构造与开发指南.md`](docs/ling/main/05-构造与开发指南.md) — 代码写在哪、按什么顺序写、怎么编怎么跑
 9. [`docs/ling/main/06-安全设计.md`](docs/ling/main/06-安全设计.md) — 防什么、不防什么、能力门禁到底是什么
 10. [`docs/ling/main/07-测试与验收.md`](docs/ling/main/07-测试与验收.md) — 测什么、怎么测、什么算通过
@@ -210,7 +209,7 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 
 ## 怎么参与
 
-- 协作规则见 [`AGENTS.md`](AGENTS.md)。
+- 硬规则见 [`RULES.md`](RULES.md)，协作方式见 [`AGENTS.md`](AGENTS.md)。
 - 提意见直接说，不用顾及措辞；文档在"写-审-问-改"循环里反复打磨，初稿必然有错。
 
 ---
