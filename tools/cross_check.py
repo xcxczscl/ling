@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 只查设计文档与根级说明；代码块内容一并查（命令行示例里的端口也要一致）
 def docs():
     paths = []
-    for pat in ("docs/**/*.md", "README.md", "AGENTS.md"):
+    for pat in ("docs/**/*.md", "README.md", "AGENTS.md", "RULES.md"):
         paths.extend(ROOT.glob(pat))
     return sorted(
         p for p in paths
