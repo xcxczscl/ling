@@ -9,9 +9,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ling/plugin_api.h"
@@ -140,6 +142,57 @@ std::string plugin_arg(const nlohmann::json& parsed) {
     return parsed["plugin"].get<std::string>();
 }
 
+// 每页行数，夹在 1..1000：负数会转成一个巨大的无符号数。
+bool read_count(const nlohmann::json& parsed, int fallback, std::size_t* out) {
+    *out = static_cast<std::size_t>(fallback);
+    if (!parsed.contains("n")) {
+        return true;
+    }
+    if (!parsed["n"].is_number()) {
+        return false;
+    }
+    const double raw = parsed["n"].get<double>();
+    if (raw >= 1000) {
+        *out = 1000;
+    } else if (raw >= 1) {
+        *out = static_cast<std::size_t>(raw);
+    } else {
+        *out = 1;
+    }
+    return true;
+}
+
+// 上翻偏移：要跳过最新的 before 行。上限 10000，与内核的夹取范围一致。
+bool read_before(const nlohmann::json& parsed, std::size_t* out) {
+    *out = 0;
+    if (!parsed.contains("before")) {
+        return true;
+    }
+    if (!parsed["before"].is_number()) {
+        return false;
+    }
+    const double raw = parsed["before"].get<double>();
+    if (raw <= 0) {
+        *out = 0;
+    } else if (raw >= 10000) {
+        *out = 10000;
+    } else {
+        *out = static_cast<std::size_t>(raw);
+    }
+    return true;
+}
+
+// 窗口是日志末尾的 count+before 行。去掉最新的 before 行，再取紧挨着的 count 行。
+// 分页在插件里做完，返回的永远是一页，不会把整份日志塞进一次调用。
+void append_page(const std::vector<std::string>& window, std::size_t count,
+                 std::size_t before, nlohmann::json* lines) {
+    const std::size_t end = window.size() > before ? window.size() - before : 0;
+    const std::size_t start = end > count ? end - count : 0;
+    for (std::size_t i = start; i < end; ++i) {
+        lines->push_back(window[i]);
+    }
+}
+
 // 写失败不让业务失败：日志是诊断手段，不是流程的一环（04/07 §7.3）。
 int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
@@ -264,22 +317,12 @@ int32_t on_tail(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* o
     if (!valid_plugin_id(plugin)) {
         return 2;
     }
-    // 行数是给人看的分页参数，夹在 1..1000：负数会转成一个巨大的无符号数。
-    int requested = 40;
-    if (parsed.contains("n")) {
-        if (!parsed["n"].is_number()) {
-            return 2;
-        }
-        const double raw = parsed["n"].get<double>();
-        if (raw >= 1000) {
-            requested = 1000;
-        } else if (raw >= 1) {
-            requested = static_cast<int>(raw);
-        } else {
-            requested = 1;
-        }
+    // 行数、上翻偏移都是给人看的分页参数，越界一律夹取。
+    std::size_t count = 0;
+    std::size_t before = 0;
+    if (!read_count(parsed, 40, &count) || !read_before(parsed, &before)) {
+        return 2;
     }
-    const std::size_t count = static_cast<std::size_t>(requested);
 
     // 没有日期参数就取该插件最新的那份日志。
     std::filesystem::path latest;
@@ -302,9 +345,9 @@ int32_t on_tail(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* o
     result["path"] = latest.empty() ? std::string() : latest.string();
     result["lines"] = nlohmann::json::array();
     if (!latest.empty()) {
-        for (const auto& line : tail_lines(latest, count)) {
-            result["lines"].push_back(line);
-        }
+        // 先读「本页 + 已翻过的行」，再在插件里切出这一页。
+        const std::vector<std::string> window = tail_lines(latest, count + before);
+        append_page(window, count, before, &result["lines"]);
     }
     return reply_json(result, out, out_len);
 }
@@ -333,13 +376,28 @@ int32_t on_query(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
         }
     }
 
-    // 逐行读过就丢：内存只与命中的行数有关，与文件大小无关。
+    // 逐行读过就丢：内存只与命中行数有关，与文件大小无关。
+    std::size_t count = 0;
+    std::size_t before = 0;
+    if (!read_count(parsed, 200, &count) || !read_before(parsed, &before)) {
+        return 2;
+    }
+
     nlohmann::json result;
     result["plugin"] = plugin;
     result["date"] = date;
+    result["found"] = false;
     result["lines"] = nlohmann::json::array();
 
     std::ifstream input(log_path_of(plugin, date), std::ios::binary);
+    if (!input) {
+        return reply_json(result, out, out_len);
+    }
+    result["found"] = true;
+
+    // 只保留末尾 count+before 行；更早的行已经翻不到，没必要留在内存里。
+    std::deque<std::string> window;
+    const std::size_t limit = count + before;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -348,8 +406,13 @@ int32_t on_query(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
         if (!level.empty() && !line_has_level(line, level)) {
             continue;
         }
-        result["lines"].push_back(line);
+        window.push_back(std::move(line));
+        if (window.size() > limit) {
+            window.pop_front();
+        }
     }
+    const std::vector<std::string> page(window.begin(), window.end());
+    append_page(page, count, before, &result["lines"]);
     return reply_json(result, out, out_len);
 }
 

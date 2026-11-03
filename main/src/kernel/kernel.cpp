@@ -1643,36 +1643,36 @@ Kernel::KernelReply Kernel::handle_kernel(const std::string& method,
             if (router_.contains(target)) {
                 nlohmann::json request;
                 request["plugin"] = id;
-                if (level.empty()) {
-                    request["n"] = count + before;
-                } else {
+                // 分页交给 core-log：它只回一页，不会把整份日志塞给路由。
+                request["n"] = count;
+                if (before > 0) {
+                    request["before"] = before;
+                }
+                if (!level.empty()) {
                     request["level"] = level;
                 }
                 const std::string text = request.dump();
                 const CallOutcome outcome = call(
                     target, reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
-                if (outcome.ok()) {
-                    const std::string tail_text(outcome.data.begin(), outcome.data.end());
-                    auto parsed = nlohmann::json::parse(tail_text, nullptr, false);
-                    // core-log 里没有这个插件的记录时退回 data/，不然「日志为空」会被当成真的没有。
-                    if (!parsed.is_discarded() && parsed.contains("lines") &&
-                        parsed["lines"].is_array() && !parsed["lines"].empty()) {
-                        auto& lines = parsed["lines"];
-                        // query 返回的是整份日志，界面只要末尾 count 条，再往前翻 before 条。
-                        const std::size_t keep = static_cast<std::size_t>(count + before);
-                        if (lines.size() > keep) {
-                            lines.erase(lines.begin(),
-                                        lines.end() - static_cast<std::ptrdiff_t>(keep));
-                        }
-                        if (before > 0) {
-                            const auto drop = static_cast<std::size_t>(before);
-                            if (lines.size() > drop) {
-                                lines.erase(lines.end() - static_cast<std::ptrdiff_t>(drop),
-                                            lines.end());
-                            } else {
-                                lines = nlohmann::json::array();
-                            }
-                        }
+                if (!outcome.ok()) {
+                    // 不再假装「没有日志」退回 data/：core-log 失败时界面要看到原因，
+                    // 否则会显示成「这个插件还没写过日志」。
+                    reply.code = outcome.code.empty() ? err::kInternal : outcome.code;
+                    reply.message = outcome.detail.empty() ? "读取日志失败" : outcome.detail;
+                    return reply;
+                }
+                const std::string tail_text(outcome.data.begin(), outcome.data.end());
+                auto parsed = nlohmann::json::parse(tail_text, nullptr, false);
+                if (!parsed.is_discarded() && parsed.is_object() && parsed.contains("lines") &&
+                    parsed["lines"].is_array()) {
+                    // tail 用 path 表示有没有日志文件；query 用 found。有文件但这一页
+                    // 为空是正常的上翻到头，不能退回 data/。
+                    const bool has_log =
+                        (parsed.contains("path") && parsed["path"].is_string() &&
+                         !parsed["path"].get<std::string>().empty()) ||
+                        (parsed.contains("found") && parsed["found"].is_boolean() &&
+                         parsed["found"].get<bool>());
+                    if (has_log) {
                         reply.result = parsed.dump();
                         return reply;
                     }
