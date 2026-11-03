@@ -27,7 +27,7 @@ ling 是插件宿主，本身不提供业务功能，全部功能由插件提供
 | 组件 | 版本 | 唯一定义位置 |
 |---|---|---|
 | ling 宿主 | 0.1.0 | 根 `CMakeLists.txt` |
-| `core-ui` | 1.0.0 | `main/builtin-plugins/core-ui/plugin.toml` |
+| `core-ui` | 1.1.0-b1 | `main/builtin-plugins/core-ui/plugin.toml` |
 | `core-settings` | 1.0.0 | `main/builtin-plugins/core-settings/plugin.toml` |
 | `core-plugin-manager` | 1.0.0 | `main/builtin-plugins/core-plugin-manager/plugin.toml` |
 | `core-job` | 1.0.0 | `main/builtin-plugins/core-job/plugin.toml` |
@@ -73,7 +73,7 @@ ling 是插件宿主，本身不提供业务功能，全部功能由插件提供
 
 ### 1.3 与需求的关系
 
-| 01 的节 | 编号 | 本文对应 |
+| 需求规格的节 | 编号 | 本文对应 |
 |---|---|---|
 | 3.9 内置插件 | 078 至 083 | §2 至 §9 |
 | 4.3 可靠性与隔离 | 116 | `docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md` §9 |
@@ -125,11 +125,11 @@ ling 是插件宿主，本身不提供业务功能，全部功能由插件提供
 
 本机界面：看插件、装卸启停、翻日志、改配置、管定时任务。侧车轨道，独立进程，只绑回环。
 
-详细设计见 `docs/ling/builtin-plugins/core-ui/` 下五份：`00-总览与边界.md`、`01-需求与用例.md`、`02-服务端与接口.md`、`03-页面与交互.md`、`04-两种形态与启动.md`。
+详细设计见 `docs/ling/builtin-plugins/core-ui/`：顶层 `00-总览与术语` 至 `08-部署与运维` 中除 04 子目录外共 8 份，加 `04-详细设计/01-服务端与接口` 至 `05-进程形态与启动` 共 5 份，合计 13 份。
 
 发布分 `webui` 与 `desktop` 两种形态，界面代码相同，差别只在由浏览器还是由 WebView2 窗口显示。
 
-**实现状态（2026-11-01）**：`webui` 版已可用——作为第五个内置插件预装，宿主自动拉起，浏览器打开 `127.0.0.1:8010` 就能用五个视图（插件、日志、配置、任务、设置）。页面在 `main/builtin-plugins/core-ui/page.html`，构建期嵌进 exe。`desktop` 版（WebView2 窗口）代码已写（`win_main.cpp`），可选编译（`LING_CORE_UI_DESKTOP=ON`），M6 打包时已出 desktop 版 zip。
+**实现状态（2026-11-02）**：`webui` 版已可用——作为第五个内置插件预装，宿主自动拉起，浏览器打开 `127.0.0.1:8010` 就能用六个页签（插件、日志、配置、任务、外观、关于）。前端是 `main/builtin-plugins/core-ui/shell.html` 加 `views/*.js`（六个页签各一份），构建期经 `tools/embed.py` 嵌进 exe。`desktop` 版（WebView2 窗口）代码已写（`win_main.cpp`），可选编译（`LING_CORE_UI_DESKTOP=ON`），M6 打包时已出 desktop 版 zip。
 
 ---
 
@@ -235,7 +235,7 @@ ling 是插件宿主，本身不提供业务功能，全部功能由插件提供
 
 | 插件 | 源码 |
 |---|---|
-| `core-ui` | `main/builtin-plugins/core-ui/`（含 `app.cpp`、`ui_server.cpp`、`page.cpp`；webui 入口 `main.cpp`、desktop 入口 `win_main.cpp`） |
+| `core-ui` | `main/builtin-plugins/core-ui/`（含 `app.cpp`、`ui_server.cpp`、`src/`；前端 `shell.html`、`shell.js`、`views/*.js`；webui 入口 `main.cpp`、desktop 入口 `win_main.cpp`） |
 | `core-settings` | `main/builtin-plugins/core-settings/` |
 | `core-plugin-manager` | `main/builtin-plugins/core-plugin-manager/` |
 | `core-job` | `main/builtin-plugins/core-job/` |
@@ -282,7 +282,7 @@ MVP 做四个内置插件（`docs/ling/main/11-MVP 范围.md` §4.2 第三条：
 
 | # | 事项 | 结论 | 落点 |
 |---|---|---|---|
-| 1 | `core-` 前缀的占用检查要加进 `docs/ling/plugin-support/01-插件装载与接口.md` §3.4 的校验顺序 | 加为第 11 步，失败返回 `E_MANIFEST_INVALID` | §2.3、plugin-support/01 |
+| 1 | `core-` 前缀的占用检查要加进 `docs/ling/plugin-support/01-插件装载与接口.md` §3.4 的校验顺序 | 加为第 11 步，失败返回 `E_MANIFEST_INVALID` | §2.3、`docs/ling/plugin-support/01-插件装载与接口.md` |
 | 2 | `core-job` 的时间表达式格式未定（cron 还是简化写法） | 用五段 cron，生态熟、文档多；不支持秒级 | `docs/ling/builtin-plugins/core-job/02-设计与接口.md` 第 2 节 **本期设定** |
 | 3 | 界面端口段 8010 起是否够用（多实例场景） | 单实例设计，够用 | `docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md` §1 |
 | 4 | `core-settings` 4 MB 上限没有依据 | 按「几百个键、每键几十字节」估，留两个数量级余量 | `docs/ling/builtin-plugins/core-settings/02-设计与接口.md` 第 1 节 **本期设定** |
@@ -300,3 +300,9 @@ MVP 做四个内置插件（`docs/ling/main/11-MVP 范围.md` §4.2 第三条：
 | `docs/ling/plugin-support/01-插件装载与接口.md` | 清单、C ABI、错误码 |
 | `docs/ling/plugin-support/02-上下文与效应账本.md` | `write_config` 与账本 |
 | `docs/ling/main/04-详细设计/04-管理端口与命令行.md` | `kernel.*` 方法与两条日志路径 |
+
+## 变更记录
+
+| 日期 | 改了什么 | 为什么 |
+|---|---|---|
+| 2026-11-03 | §10 第 1 条的落点由 `plugin-support/01` 改为完整路径 | 跨文档缩写无法唯一定位 |
