@@ -29,7 +29,11 @@ function(ling_set_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        # -Wno-c++20-compat：GCC 13 起把 requires 报成「C++20 关键字」的兼容性提示，
+        # 而清单结构里有一个同名字段（见 depgraph.hpp）。这是提示不是错误，
+        # 升到 C++20 之前不需要为它改名，所以在这里关掉。
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror
+                                                  -Wno-c++20-compat)
     endif()
 endfunction()
 

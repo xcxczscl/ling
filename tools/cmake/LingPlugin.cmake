@@ -28,8 +28,10 @@ function(add_ling_plugin plugin_id)
     ling_set_sanitizer(${plugin_id})
 
     # 产物名必须等于编号：装载器按 <编号>.dll / <编号>.so 找文件。
+    # PREFIX "" 是给 MinGW 用的：它默认给动态库加 lib 前缀，装出来的名字就对不上了。
     set_target_properties(${plugin_id} PROPERTIES
         OUTPUT_NAME "${plugin_id}"
+        PREFIX ""
         LIBRARY_OUTPUT_DIRECTORY "${LING_PLUGIN_OUTPUT_DIR}/${plugin_id}"
         RUNTIME_OUTPUT_DIRECTORY "${LING_PLUGIN_OUTPUT_DIR}/${plugin_id}")
 
