@@ -132,6 +132,16 @@ bool token_equal(const std::string& a, const std::string& b) {
     return diff == 0;
 }
 
+// 发一段应答。失败说明对端已经走了，调用方据此断开并留下现场。
+bool send_wire(sys::socket_handle fd, const std::string& wire) {
+    const int written = ::send(fd, wire.data(), static_cast<int>(wire.size()), 0);
+    if (written < 0 || static_cast<std::size_t>(written) != wire.size()) {
+        std::fprintf(stderr, "[core-ui] 应答发送失败：已写 %d/%zu 字节\n", written, wire.size());
+        return false;
+    }
+    return true;
+}
+
 std::string query_value(const std::string& query, const std::string& key) {
     std::size_t at = 0;
     while (at <= query.size()) {
@@ -269,6 +279,8 @@ struct UiServer::Impl {
     std::string token;
 
     PanelRegistry registry{std::filesystem::path()};
+    // 探测失败后先别再问宿主：主机离线时每次都等 5 秒会把整个界面拖住。
+    std::chrono::steady_clock::time_point host_retry_at{};
 
     // 主题名有 2 秒缓存：theme.css 每个面板加载时都会拉一次，
     // 每次都去问宿主没必要；但缓存久了会让外观页切换后回退成旧值。
@@ -280,6 +292,11 @@ struct UiServer::Impl {
         sys::socket_handle fd = sys::bad_socket();
         std::string buffer;
         std::chrono::steady_clock::time_point opened;
+        // 已回 413，但客户端可能还在发剩余请求体；先把收到的字节读完再关，
+        // 否则 Windows 上带着未读数据 closesocket 会给对方发 RST，应答读不到。
+        bool discarding = false;
+        // 丢弃模式的独立截止时间：持续可读的垃圾流不能一直占着连接。
+        std::chrono::steady_clock::time_point discard_deadline;
     };
     std::vector<Conn> conns;
 
@@ -361,16 +378,28 @@ void UiServer::Impl::ensure_panels(bool force) {
     if (!force && !registry.stale(now)) {
         return;
     }
+    if (!force && now < host_retry_at) {
+        // 刚确认过宿主离线：这次刷新需求先压住，别让每个请求都再等 5 秒。
+        return;
+    }
     // 清单先重读（写动作之后必须），状态再套上去。
     registry.reload_manifests();
     const auto call = call_host("kernel.plugins", nlohmann::json::object(), kProbeTimeoutMs);
     if (!call.ok) {
-        return;  // 宿主没响应时保留旧表，界面照旧能用
-    }
-    const auto parsed = nlohmann::json::parse(call.result, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("plugins")) {
+        // 失败也要推进时间戳，否则 stale 永远为真，每个请求都会再等一次超时；
+        // 同时记下离线窗口，短时间内不再探测。
+        registry.mark_refreshed();
+        host_retry_at = now + std::chrono::seconds(30);
         return;
     }
+    const auto parsed = nlohmann::json::parse(call.result, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("plugins") ||
+        !parsed["plugins"].is_array()) {
+        registry.mark_refreshed();
+        host_retry_at = now + std::chrono::seconds(30);
+        return;
+    }
+    host_retry_at = {};
     registry.apply_states(parsed["plugins"]);
 }
 
@@ -547,8 +576,9 @@ Response UiServer::Impl::handle_panel_call(const nlohmann::json& args) {
     }
     ensure_panels();
     // 第 2 步：插件必须已装载且带 [ui]。停用后它的面板即使还开着也调不动。
-    if (registry.find(plugin) == nullptr) {
-        return fail(403, err::kUiForbidden, "插件 " + plugin + " 没有面板或没有装载");
+    const PanelInfo* panel = registry.find(plugin);
+    if (panel == nullptr || panel->state != "running") {
+        return fail(403, err::kUiForbidden, "插件 " + plugin + " 没有装载或没有面板");
     }
     // 第 3 步：能力边界的第二道闸，第一道在外壳。
     if (method.rfind(plugin + ".", 0) != 0) {
@@ -585,11 +615,12 @@ Response UiServer::Impl::handle_action(const std::string& action, const nlohmann
             return call.response;
         }
         const auto parsed = nlohmann::json::parse(call.result, nullptr, false);
-        // 内核给的是 {plugins:[...]}，界面要的是数组。
-        if (parsed.is_object() && parsed.contains("plugins")) {
-            return ok(parsed["plugins"]);
+        // 内核给的是 {plugins:[...]}，界面要的是数组。形状不对就是宿主出了问题，
+        // 不能悄悄回一个空列表让页面以为「一个插件都没有」。
+        if (!parsed.is_object() || !parsed.contains("plugins") || !parsed["plugins"].is_array()) {
+            return fail(502, err::kInternal, "宿主返回的插件列表格式不对");
         }
-        return ok(parsed.is_discarded() ? nlohmann::json::array() : parsed);
+        return ok(parsed["plugins"]);
     }
 
     if (action == "panels") {
@@ -687,8 +718,9 @@ Response UiServer::Impl::handle_action(const std::string& action, const nlohmann
             return keys_call.response;
         }
         const auto keys = nlohmann::json::parse(keys_call.result, nullptr, false);
-        if (keys.is_discarded() || !keys.is_object() || !keys.contains("keys")) {
-            return ok({{"items", nlohmann::json::array()}});
+        if (keys.is_discarded() || !keys.is_object() || !keys.contains("keys") ||
+            !keys["keys"].is_array()) {
+            return fail(502, err::kInternal, "宿主返回的配置键列表格式不对");
         }
         // 逐键取一次值：list 只给键名，值按类型配控件要用。
         nlohmann::json items = nlohmann::json::array();
@@ -995,11 +1027,14 @@ bool UiServer::Impl::service_conn(Conn& conn) {
     const auto header_end = conn.buffer.find("\r\n\r\n");
     if (header_end == std::string::npos) {
         if (conn.buffer.size() > 16 * 1024) {
-            const auto response =
-                build_response(fail(413, err::kPayloadTooLarge, "请求头过长"));
-            ::send(conn.fd, response.data(), static_cast<int>(response.size()), 0);
+            if (!send_wire(conn.fd, build_response(fail(413, err::kPayloadTooLarge, "请求头过长")))) {
+                return true;  // 应答都没发出去，直接断开，不再进入丢弃模式
+            }
             conn.buffer.clear();
-            return true;
+            conn.discarding = true;
+            conn.discard_deadline = std::chrono::steady_clock::now() +
+                                    std::chrono::seconds(kRequestTimeoutSeconds);
+            return false;
         }
         return false;
     }
@@ -1035,11 +1070,14 @@ bool UiServer::Impl::service_conn(Conn& conn) {
     }
 
     if (content_length > kMaxRequestBytes) {
-        const auto response =
-            build_response(fail(413, err::kPayloadTooLarge, "请求体超过 1 MB"));
-        ::send(conn.fd, response.data(), static_cast<int>(response.size()), 0);
+        if (!send_wire(conn.fd, build_response(fail(413, err::kPayloadTooLarge, "请求体超过 1 MB")))) {
+            return true;  // 应答都没发出去，直接断开
+        }
         conn.buffer.clear();
-        return true;
+        conn.discarding = true;
+        conn.discard_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(kRequestTimeoutSeconds);
+        return false;
     }
     if (conn.buffer.size() < header_end + 4 + content_length) {
         return false;  // 请求体还没收完
@@ -1056,8 +1094,7 @@ bool UiServer::Impl::service_conn(Conn& conn) {
         const auto sp1 = line.find(' ');
         const auto sp2 = line.find(' ', sp1 == std::string::npos ? 0 : sp1 + 1);
         if (sp1 == std::string::npos || sp2 == std::string::npos) {
-            const auto response = build_response(fail(400, err::kProtocol, "请求行不合法"));
-            ::send(conn.fd, response.data(), static_cast<int>(response.size()), 0);
+            send_wire(conn.fd, build_response(fail(400, err::kProtocol, "请求行不合法")));
             return true;
         }
         request.method = line.substr(0, sp1);
@@ -1110,8 +1147,7 @@ bool UiServer::Impl::service_conn(Conn& conn) {
         // 参数类型不符等解析异常只应影响这一条请求，不能让界面进程退出。
         response = fail(400, err::kProtocol, "请求参数不合法");
     }
-    const std::string wire = build_response(response);
-    ::send(conn.fd, wire.data(), static_cast<int>(wire.size()), 0);
+    send_wire(conn.fd, build_response(response));
     return true;
 }
 
@@ -1211,9 +1247,30 @@ void UiServer::poll(int timeout_ms) {
             impl_->close_conn(i);
             continue;
         }
+        // 已经回过 413：丢掉剩余请求体，等客户端读完应答主动关闭（recv 返回 0）。
+        // 客户端一直发垃圾字节时不能无限等，到截止时间就关。
+        if (impl_->conns[i].discarding) {
+            if (std::chrono::steady_clock::now() >= impl_->conns[i].discard_deadline) {
+                impl_->close_conn(i);
+                continue;
+            }
+            ++i;
+            continue;
+        }
         impl_->conns[i].buffer.append(buffer, static_cast<std::size_t>(received));
         if (impl_->conns[i].buffer.size() > kMaxRequestBytes + 16 * 1024) {
-            impl_->close_conn(i);
+            // 不管超的是头还是体，统一按 413 应答，别无声无息地掐断。应答后
+            // 转入丢弃模式，把客户端还在发的字节读完再关，避免 RST 吞掉应答。
+            if (!send_wire(impl_->conns[i].fd,
+                           build_response(fail(413, err::kPayloadTooLarge, "请求体超过 1 MB")))) {
+                impl_->close_conn(i);
+                continue;
+            }
+            impl_->conns[i].buffer.clear();
+            impl_->conns[i].discarding = true;
+            impl_->conns[i].discard_deadline = std::chrono::steady_clock::now() +
+                                               std::chrono::seconds(kRequestTimeoutSeconds);
+            ++i;
             continue;
         }
         // 应答完就断开：不支持长连接，也就不需要维持状态。请求没发全的留着等下一轮。

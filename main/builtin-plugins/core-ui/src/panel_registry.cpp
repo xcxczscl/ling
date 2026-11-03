@@ -2,9 +2,14 @@
 #include "panel_registry.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <system_error>
 
 #include <toml.hpp>
+
+#include "panel_assets.hpp"
 
 namespace ling {
 namespace ui {
@@ -43,27 +48,46 @@ PanelRegistry::PanelRegistry(std::filesystem::path plugins_dir)
 
 void PanelRegistry::reload_manifests() {
     std::vector<PanelInfo> fresh;
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(plugins_dir_, ec)) {
-        if (!entry.is_directory()) {
+    std::error_code iter_ec;
+    for (const auto& entry : std::filesystem::directory_iterator(plugins_dir_, iter_ec)) {
+        std::error_code entry_ec;
+        if (!entry.is_directory(entry_ec)) {
+            continue;
+        }
+        const auto id = entry.path().filename().string();
+        if (!valid_plugin_id(id)) {
+            // 目录名不合规就是坏数据：记一笔，别让它悄悄变成另一张面板。
+            std::fprintf(stderr, "[core-ui] 跳过插件目录 %s：目录名不是合法的插件编号\n",
+                         id.c_str());
             continue;
         }
         const auto manifest_path = entry.path() / "plugin.toml";
-        if (!std::filesystem::exists(manifest_path, ec)) {
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(manifest_path, exists_ec)) {
             continue;
         }
+        // 先读成字符串再解析：toml::parse_file(const char*) 在 Windows 上会把非 ASCII
+        // 路径当成窄字符，中文数据根里的清单会读错。
+        std::ifstream input(manifest_path, std::ios::binary);
+        if (!input) {
+            std::fprintf(stderr, "[core-ui] 读不到清单，跳过：%s\n", manifest_path.string().c_str());
+            continue;
+        }
+        const std::string text((std::istreambuf_iterator<char>(input)),
+                               std::istreambuf_iterator<char>());
         toml::table table;
         try {
-            table = toml::parse_file(manifest_path.string());
+            table = toml::parse(text);
         } catch (const toml::parse_error&) {
             // 清单坏了不阻断就绪：这个插件不进面板表，其他面板照常可用（§8 第 4 步）。
+            std::fprintf(stderr, "[core-ui] 清单解析失败，跳过：%s\n",
+                         manifest_path.string().c_str());
             continue;
         }
         const auto* ui = table.get("ui");
         if (ui == nullptr || !ui->is_table()) {
             continue;
         }
-        const auto id = entry.path().filename().string();
         PanelInfo info;
         info.id = id;
         const auto* title = ui->as_table()->get("title");
@@ -86,6 +110,14 @@ void PanelRegistry::reload_manifests() {
         }
         info.state = "stopped";
         fresh.push_back(std::move(info));
+    }
+    if (iter_ec) {
+        // 目录读到一半失败，fresh 只是半截表。不能拿它覆盖旧表，否则界面上
+        // 的面板会凭空消失；保留旧表，按 TTL 等下一轮再试，避免每个请求都重读。
+        std::fprintf(stderr, "[core-ui] 读插件目录失败：%s\n", plugins_dir_.string().c_str());
+        dirty_ = false;
+        refreshed_at_ = std::chrono::steady_clock::now();
+        return;
     }
     std::sort(fresh.begin(), fresh.end(),
               [](const PanelInfo& a, const PanelInfo& b) { return a.id < b.id; });
@@ -113,10 +145,13 @@ void PanelRegistry::apply_states(const nlohmann::json& plugins) {
         panel.state = "stopped";
         panel.reason.clear();
         for (const auto& item : plugins) {
-            if (!item.is_object() || item.value("id", std::string()) != panel.id) {
+            if (!item.is_object() || !item.contains("id") || !item["id"].is_string() ||
+                item["id"].get<std::string>() != panel.id) {
                 continue;
             }
-            panel.state = map_state(item.value("state", std::string()));
+            panel.state = map_state(item.contains("state") && item["state"].is_string()
+                                        ? item["state"].get<std::string>()
+                                        : std::string());
             if (item.contains("reason") && item["reason"].is_string()) {
                 panel.reason = item["reason"].get<std::string>();
             }
@@ -135,6 +170,8 @@ bool PanelRegistry::stale(std::chrono::steady_clock::time_point now) const {
 }
 
 void PanelRegistry::mark_dirty() { dirty_ = true; }
+
+void PanelRegistry::mark_refreshed() { refreshed_at_ = std::chrono::steady_clock::now(); }
 
 const PanelInfo* PanelRegistry::find(const std::string& id) const {
     for (const auto& panel : panels_) {

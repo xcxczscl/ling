@@ -31,5 +31,9 @@ Asset load_panel_asset(const std::filesystem::path& plugins_dir, const std::stri
 // URL 解码一次。解不开的 % 原样保留，由第 1 道检查拦下。
 std::string url_decode_once(const std::string& text);
 
+// 插件 id 是否合法（^[a-z0-9][a-z0-9-]*$，小写、只含数字与连字符）。
+// 面板路径与清单目录名都用这一条，避免两处规则走样。
+bool valid_plugin_id(const std::string& id);
+
 }  // namespace ui
 }  // namespace ling

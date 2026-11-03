@@ -10,6 +10,8 @@
 
   const STORAGE_TOKEN = "ling-ui-token";
   const HOME_HINT = "请从 ling 主程序打开界面";
+  // 宿主的管理动作最长等 30 秒（安装要解压）；客户端多留一点余量。
+  const API_TIMEOUT_MS = 40000;
 
   const state = {
     panels: [],
@@ -89,32 +91,47 @@
   }
 
   async function api(action, args) {
-    const response = await fetch("/api/" + action, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + storedToken()
-      },
-      body: JSON.stringify(args || {})
-    });
-    if (response.status === 401) {
-      fail401();
-      throw { code: "E_AUTH", message: "口令已变，请重新从主程序打开" };
-    }
-    let body = null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
     try {
-      body = await response.json();
+      const response = await fetch("/api/" + action, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + storedToken()
+        },
+        body: JSON.stringify(args || {}),
+        signal: controller.signal
+      });
+      if (response.status === 401) {
+        fail401();
+        throw { code: "E_AUTH", message: "口令已变，请重新从主程序打开" };
+      }
+      let body = null;
+      try {
+        body = await response.json();
+      } catch (error) {
+        throw {
+          code: "E_PROTOCOL",
+          message: "ling 返回了看不懂的内容（HTTP " + response.status + "）"
+        };
+      }
+      if (!body || body.ok !== true) {
+        const error = (body && body.error) || {
+          code: "E_INTERNAL",
+          message: "请求失败（HTTP " + response.status + "）"
+        };
+        throw error;
+      }
+      return body.result;
     } catch (error) {
-      throw { code: "E_PROTOCOL", message: "ling 返回了看不懂的内容（HTTP " + response.status + "）" };
-    }
-    if (!body || body.ok !== true) {
-      const error = (body && body.error) || {
-        code: "E_INTERNAL",
-        message: "请求失败（HTTP " + response.status + "）"
-      };
+      if (error && error.name === "AbortError") {
+        throw { code: "E_TIMEOUT", message: "ling 没有响应，正在忙或已卡住" };
+      }
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    return body.result;
   }
 
   function fail401() {
@@ -163,6 +180,12 @@
   let dialogResolver = null;
 
   function confirmDialog(options) {
+    if (dialogResolver) {
+      // 新框顶掉旧框：旧 Promise 先按「取消」收尾，否则等它的人会永远挂住。
+      const previous = dialogResolver;
+      dialogResolver = null;
+      previous(false);
+    }
     const host = document.getElementById("dialog-host");
     host.innerHTML = "";
     host.hidden = false;
@@ -276,8 +299,13 @@
   // ---------------- 宿主状态与面板列表 ----------------
 
   let failures = 0;
+  let refreshing = false;
 
   async function refreshPanels() {
+    if (refreshing) {
+      return;  // 上一轮还没回来，别叠着发
+    }
+    refreshing = true;
     try {
       const list = await api("panels");
       failures = 0;
@@ -305,6 +333,8 @@
       if (failures >= 2) {
         setHostState(false);
       }
+    } finally {
+      refreshing = false;
     }
   }
 

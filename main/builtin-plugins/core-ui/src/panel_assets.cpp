@@ -49,20 +49,27 @@ const char* mime_for(const std::string& path) {
     return nullptr;
 }
 
-bool valid_plugin_id(const std::string& id) {
-    if (id.empty()) {
-        return false;
+// 单个面板文件的上限。面板是静态资源，超过这个量级多半是放错了东西（日志、数据库、构建产物），
+// 与其把它整个读进内存，不如直接回 413。
+constexpr std::size_t kMaxPanelAssetBytes = 8 * 1024 * 1024;
+
+// If-None-Match 可能带弱校验前缀、引号外空白或一串候选值（RFC 9110 §8.8.3）。
+// 我们自己的 ETag 是强校验，取第一个候选并去掉 W/ 前缀后按原文比较即可。
+std::string normalize_etag(std::string value) {
+    const auto comma = value.find(',');
+    if (comma != std::string::npos) {
+        value.resize(comma);
     }
-    if (!(id[0] >= 'a' && id[0] <= 'z') && !(id[0] >= '0' && id[0] <= '9')) {
-        return false;
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+        value.erase(value.begin());
     }
-    for (const char ch : id) {
-        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
-        if (!ok) {
-            return false;
-        }
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+        value.pop_back();
     }
-    return true;
+    if (value.rfind("W/", 0) == 0) {
+        value.erase(0, 2);
+    }
+    return value;
 }
 
 // 真实路径的目录前缀比较。只做字符串前缀挡不住符号链接，
@@ -87,6 +94,22 @@ Asset not_found(const std::string& message) {
 }
 
 }  // namespace
+
+bool valid_plugin_id(const std::string& id) {
+    if (id.empty()) {
+        return false;
+    }
+    if (!(id[0] >= 'a' && id[0] <= 'z') && !(id[0] >= '0' && id[0] <= '9')) {
+        return false;
+    }
+    for (const char ch : id) {
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
 
 std::string url_decode_once(const std::string& text) {
     std::string out;
@@ -180,6 +203,13 @@ Asset load_panel_asset(const std::filesystem::path& plugins_dir, const std::stri
     if (ec) {
         return not_found("读不到面板文件：" + path);
     }
+    if (size > kMaxPanelAssetBytes) {
+        Asset too_large;
+        too_large.status = 413;
+        too_large.error_code = err::kPayloadTooLarge;
+        too_large.error_message = "面板文件超过 8 MB 上限：" + path;
+        return too_large;
+    }
     const auto write_time = std::filesystem::last_write_time(target, ec);
     const auto stamp = ec ? 0 : static_cast<long long>(write_time.time_since_epoch().count());
 
@@ -190,13 +220,14 @@ Asset load_panel_asset(const std::filesystem::path& plugins_dir, const std::stri
     Asset asset;
     asset.content_type = mime;
     asset.etag = etag;
-    if (!if_none_match.empty() && if_none_match == asset.etag) {
+    if (!if_none_match.empty() && normalize_etag(if_none_match) == asset.etag) {
         asset.status = 304;
         return asset;
     }
 
-    // 分块读，每块之间看一次表：慢盘（断开的网络共享）上卡住时，
-    // 到点回 504，而不是把整个单线程循环一起拖死（§9 的 5 秒）。
+    // 分块读，每块之间看一次表。注意：阻塞的 read 没法从这个单线程里打断，
+    // 所以这个上限只能保证「到点后最多再等一次阻塞读」，不是硬性的 504。
+    // 慢盘（断开的网络共享）上仍可能长时间停在这里，这是当前实现的已知限制（§9）。
     std::ifstream input(target, std::ios::binary);
     if (!input) {
         Asset failed;

@@ -4,10 +4,13 @@
 // 不起自己的线程：宿主是单线程内核，插件线程调 call 会与内核写表并发。
 // 改为订阅内核每 200 毫秒广播一次的 kernel.tick，在回调里检查并执行。
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <set>
@@ -16,6 +19,7 @@
 #include <vector>
 
 #include "ling/plugin_api.h"
+#include "ling/sys.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +41,30 @@ struct Cron {
     CronField weekday;
 };
 
+// 只接受十进制数字，累加到 limit 之上就判失败。用有符号 64 位，避免 int 溢出后绕回合法区间。
+bool parse_number(const std::string& text, std::int64_t limit, std::int64_t* out) {
+    if (text.empty()) {
+        return false;
+    }
+    std::int64_t value = 0;
+    for (char ch : text) {
+        if (std::isdigit(static_cast<unsigned char>(ch)) == 0) {
+            return false;
+        }
+        value = value * 10 + (ch - '0');
+        if (value > limit) {
+            return false;
+        }
+    }
+    *out = value;
+    return true;
+}
+
+// 数值段故意给一个比所有上限都大的上限：先防溢出，再统一报「超出范围」。
+constexpr std::int64_t kNumberLimit = 1000000;
+// 步长上限 60：cron 的每一段都不超过 60 个取值，再大的步长没有意义。
+constexpr std::int64_t kMaxStep = 60;
+
 bool parse_field(const std::string& text, int low, int high, const char* name, CronField* out,
                  std::string* error) {
     if (text == "*") {
@@ -52,34 +80,34 @@ bool parse_field(const std::string& text, int low, int high, const char* name, C
             return false;
         }
 
-        int step = 1;
+        std::int64_t step = 1;
         std::string range = piece;
         const auto slash = piece.find('/');
         if (slash != std::string::npos) {
             range = piece.substr(0, slash);
             const std::string step_text = piece.substr(slash + 1);
-            for (char ch : step_text) {
-                if (std::isdigit(static_cast<unsigned char>(ch)) == 0) {
-                    *error = std::string("cron 的「") + name + "」段步长不是数字：" + step_text;
-                    return false;
-                }
-            }
-            step = std::atoi(step_text.c_str());
-            if (step <= 0) {
-                *error = std::string("cron 的「") + name + "」段步长必须大于 0";
+            if (!parse_number(step_text, kMaxStep, &step) || step <= 0) {
+                *error = std::string("cron 的「") + name + "」段步长必须是 1 至 60 的整数：" +
+                         step_text;
                 return false;
             }
         }
 
-        int first = low;
-        int last = high;
+        std::int64_t first = low;
+        std::int64_t last = high;
         if (range != "*") {
             const auto dash = range.find('-');
             if (dash != std::string::npos) {
-                first = std::atoi(range.substr(0, dash).c_str());
-                last = std::atoi(range.substr(dash + 1).c_str());
+                if (!parse_number(range.substr(0, dash), kNumberLimit, &first) ||
+                    !parse_number(range.substr(dash + 1), kNumberLimit, &last)) {
+                    *error = std::string("cron 的「") + name + "」段不是数字：" + range;
+                    return false;
+                }
             } else {
-                first = std::atoi(range.c_str());
+                if (!parse_number(range, kNumberLimit, &first)) {
+                    *error = std::string("cron 的「") + name + "」段不是数字：" + range;
+                    return false;
+                }
                 last = first;
             }
         }
@@ -88,8 +116,13 @@ bool parse_field(const std::string& text, int low, int high, const char* name, C
                      std::to_string(low) + " 至 " + std::to_string(high);
             return false;
         }
-        for (int value = first; value <= last; value += step) {
-            out->values.insert(value);
+        for (std::int64_t value = first; value <= last;) {
+            out->values.insert(static_cast<int>(value));
+            // 先判断下一次会不会越过 last，再累加：这样 step 再大也不会溢出。
+            if (value > last - step) {
+                break;
+            }
+            value += step;
         }
 
         if (comma == std::string::npos) {
@@ -208,6 +241,8 @@ struct State {
     bool loaded = false;
     int load_attempts = 0;
     bool catch_up_pending = true;
+    // 触发记录落在插件自己的 data 目录，重启后 catch_up 不会重复补跑当天任务。
+    std::filesystem::path state_path;
 };
 
 State g;
@@ -318,6 +353,72 @@ bool delete_job(const std::string& name) {
                                 reinterpret_cast<const uint8_t*>(null_text), 4) == 0;
 }
 
+// 把每个任务的 last_fired 落到 <data>/state.json。写失败只记日志：
+// 丢了记录最多导致重启后多补跑一次，不该让心跳失败。
+void save_fired() {
+    if (g.state_path.empty()) {
+        // 没有数据目录就没法落盘，补跑记录会随重启丢掉；至少留一行线索。
+        std::fprintf(stderr, "[core-job] 没有数据目录，触发记录不会落盘\n");
+        return;
+    }
+    nlohmann::json state = nlohmann::json::object();
+    state["jobs"] = nlohmann::json::object();
+    for (const auto& item : g.jobs) {
+        if (!item.second.last_fired.empty()) {
+            state["jobs"][item.first] = item.second.last_fired;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(g.state_path.parent_path(), ec);
+    if (ec) {
+        std::fprintf(stderr, "[core-job] 建状态目录失败：%s\n",
+                     g.state_path.parent_path().string().c_str());
+        return;
+    }
+    auto tmp_path = g.state_path;
+    tmp_path += ".tmp";
+    std::ofstream output(tmp_path, std::ios::trunc | std::ios::binary);
+    if (!output) {
+        std::fprintf(stderr, "[core-job] 状态文件写不了：%s\n", tmp_path.string().c_str());
+        return;
+    }
+    output << state.dump();
+    output.close();
+    if (!output) {
+        std::fprintf(stderr, "[core-job] 状态文件写入失败：%s\n", tmp_path.string().c_str());
+        std::filesystem::remove(tmp_path, ec);
+        return;
+    }
+    if (!ling::sys::atomic_replace(tmp_path, g.state_path)) {
+        std::fprintf(stderr, "[core-job] 状态文件替换失败：%s\n", g.state_path.string().c_str());
+        std::filesystem::remove(tmp_path, ec);
+    }
+}
+
+void load_fired() {
+    if (g.state_path.empty()) {
+        return;
+    }
+    std::ifstream input(g.state_path, std::ios::binary);
+    if (!input) {
+        return;
+    }
+    const auto parsed = nlohmann::json::parse(input, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("jobs") ||
+        !parsed["jobs"].is_object()) {
+        // 坏了就当作没记录：下次启动可能补跑一次。记一笔，别让用户以为记录丢了没原因。
+        std::fprintf(stderr, "[core-job] 状态文件格式不对，忽略触发记录：%s\n",
+                     g.state_path.string().c_str());
+        return;
+    }
+    const auto& fired = parsed["jobs"];
+    for (auto& item : g.jobs) {
+        if (fired.contains(item.first) && fired[item.first].is_string()) {
+            item.second.last_fired = fired[item.first].get<std::string>();
+        }
+    }
+}
+
 // 返回 false 表示 core-settings 还没就绪，调用方下次心跳再试。
 bool load_jobs() {
     g.jobs.clear();
@@ -355,6 +456,7 @@ bool load_jobs() {
         }
         g.jobs[job.name] = job;
     }
+    load_fired();
     return true;
 }
 
@@ -512,25 +614,34 @@ int32_t on_tick(void*, const char*, const uint8_t* payload, size_t len) {
     g.last_minute = minute;
 
     // 补跑检查放在第一次心跳做：那时所有插件都已装载完，目标方法才调得到。
+    bool fired = false;
     if (g.catch_up_pending) {
         g.catch_up_pending = false;
+        const std::string today = minute.substr(0, 10);
         for (auto& item : g.jobs) {
             Job& job = item.second;
             if (!job.enabled || !job.catch_up) {
                 continue;
             }
-            if (missed_today(job.cron, now)) {
-                std::fprintf(stderr, "[core-job] 任务 %s 补跑一次（停机期间错过）\n",
-                             job.name.c_str());
-                job.last_fired = minute;
-                invoke(job);
+            // 今天已经跑过（记录落在 state.json）就不再补跑：重启后重复执行比漏跑更糟。
+            if (!missed_today(job.cron, now) || job.last_fired.substr(0, 10) == today) {
+                continue;
             }
+            std::fprintf(stderr, "[core-job] 任务 %s 补跑一次（停机期间错过）\n",
+                         job.name.c_str());
+            job.last_fired = minute;
+            fired = true;
+            invoke(job);
         }
     }
 
     for (auto& item : g.jobs) {
         Job& job = item.second;
         if (!job.enabled || !cron_matches(job.cron, now)) {
+            continue;
+        }
+        // 本分钟已经触发过（刚重启就落回同一分钟）：别再来一次。
+        if (job.last_fired == minute) {
             continue;
         }
         // 同步模型下心跳是串行的，这个标志不会命中；留着是为了将来引入线程后仍然成立。
@@ -540,8 +651,12 @@ int32_t on_tick(void*, const char*, const uint8_t* payload, size_t len) {
         }
         job.running = true;
         job.last_fired = minute;
+        fired = true;
         invoke(job);
         job.running = false;
+    }
+    if (fired) {
+        save_fired();
     }
     return 0;
 }
@@ -561,6 +676,10 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
     }
     g.host = host;
     g.ctx = ctx;
+    const char* data_dir = host->data_dir(ctx);
+    if (data_dir != nullptr && data_dir[0] != '\0') {
+        g.state_path = std::filesystem::path(data_dir) / "state.json";
+    }
 
     // 先订阅心跳，再读任务：读的过程里来一次心跳也无妨，那个分钟会被记下。
     uint64_t sub_id = 0;

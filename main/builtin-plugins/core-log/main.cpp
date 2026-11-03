@@ -63,6 +63,45 @@ bool valid_plugin_id(const std::string& id) {
     return true;
 }
 
+// 级别是枚举，理由同 §8：查询按级别过滤，随手传的字符串只会让过滤失效。
+bool valid_level(const std::string& level) {
+    return level == "debug" || level == "info" || level == "warn" || level == "error";
+}
+
+// 日期只接受 YYYY-MM-DD：它要拿去拼文件名，放任输入就等于开了目录穿越的口子。
+bool valid_date(const std::string& text) {
+    if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
+        return false;
+    }
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (i == 4 || i == 7) {
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(text[i])) == 0) {
+            return false;
+        }
+    }
+    const int month = std::atoi(text.substr(5, 2).c_str());
+    const int day = std::atoi(text.substr(8, 2).c_str());
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+// 按行首的「<时间> [级别] 」结构取级别，而不是在整行里搜 "[info]"：
+// 否则正文里带一个 [info] 就会被误当成该级别的日志。
+bool line_has_level(const std::string& line, const std::string& level) {
+    // 行格式是「<日期 时间> [级别] 正文」，时间戳本身含空格，不能拿第一个空格定位。
+    // 级别结束的「] 」一定在正文之前，取第一个「] 」，再往前找最近的「[」。
+    const auto close = line.find("] ");
+    if (close == std::string::npos) {
+        return false;
+    }
+    const auto open = line.rfind('[', close);
+    if (open == std::string::npos) {
+        return false;
+    }
+    return line.compare(open + 1, close - open - 1, level) == 0;
+}
+
 int32_t reply_json(const nlohmann::json& value, uint8_t** out, size_t* out_len) {
     const std::string text = value.dump();
     auto* buffer = static_cast<uint8_t*>(std::malloc(text.size() + 1));
@@ -92,10 +131,19 @@ std::filesystem::path log_path_of(const std::string& plugin, const std::string& 
     return g.log_dir / (plugin + "-" + date + ".log");
 }
 
+// plugin 字段必须是字符串：json::value 在类型不符时会抛 type_error，
+// 那会被路由层当成 E_INTERNAL，变成一条看不懂的内部错误。
+std::string plugin_arg(const nlohmann::json& parsed) {
+    if (!parsed.contains("plugin") || !parsed["plugin"].is_string()) {
+        return {};
+    }
+    return parsed["plugin"].get<std::string>();
+}
+
 // 写失败不让业务失败：日志是诊断手段，不是流程的一环（04/07 §7.3）。
 int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
-    const std::string plugin = parsed.value("plugin", "");
+    const std::string plugin = plugin_arg(parsed);
     if (!valid_plugin_id(plugin)) {
         return 2;
     }
@@ -103,11 +151,24 @@ int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
         return 2;
     }
     const std::string message = parsed["message"].get<std::string>();
-    const std::string level = parsed.value("level", "info");
+    std::string level = "info";
+    if (parsed.contains("level")) {
+        if (!parsed["level"].is_string() ||
+            !valid_level(parsed["level"].get<std::string>())) {
+            return 2;
+        }
+        level = parsed["level"].get<std::string>();
+    }
 
     // 单行封顶 8 KB：一个插件写一行几十 MB 会把查询拖垮（02-设计与接口.md §8）。
     constexpr std::size_t kMaxLineBytes = 8 * 1024;
     std::string body = message;
+    // 正文里的换行会把一行日志拆成两行，后面那一行可以伪造级别和时间，必须压平。
+    for (auto& ch : body) {
+        if (ch == '\r' || ch == '\n') {
+            ch = ' ';
+        }
+    }
     bool truncated = false;
     if (body.size() > kMaxLineBytes) {
         body.resize(kMaxLineBytes);
@@ -116,18 +177,27 @@ int32_t on_write(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
 
     std::error_code ec;
     std::filesystem::create_directories(g.log_dir, ec);
+    if (ec) {
+        std::fprintf(stderr, "[core-log] 建日志目录失败：%s\n", g.log_dir.string().c_str());
+        return reply_json({{"written", false}}, out, out_len);
+    }
     const auto path = log_path_of(plugin, today_text());
     std::ofstream output(path, std::ios::app | std::ios::binary);
     if (!output) {
         // 环境问题不报给调用方：它改不了，报了只会让业务失败。往 stderr 留一句供排查。
         std::fprintf(stderr, "[core-log] 无法写入 %s\n", path.string().c_str());
-        return 0;
+        return reply_json({{"written", false}}, out, out_len);
     }
     output << stamp_text() << " [" << level << "] " << body;
     if (truncated) {
         output << "（已截断，原长 " << message.size() << " 字节）";
     }
     output << "\n";
+    output.close();
+    if (!output) {
+        std::fprintf(stderr, "[core-log] 写日志失败：%s\n", path.string().c_str());
+        return reply_json({{"written", false}}, out, out_len);
+    }
     return reply_json({{"written", true}}, out, out_len);
 }
 
@@ -190,11 +260,26 @@ std::vector<std::string> tail_lines(const std::filesystem::path& path, std::size
 
 int32_t on_tail(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
-    const std::string plugin = parsed.value("plugin", "");
+    const std::string plugin = plugin_arg(parsed);
     if (!valid_plugin_id(plugin)) {
         return 2;
     }
-    const std::size_t count = parsed.value("n", 40);
+    // 行数是给人看的分页参数，夹在 1..1000：负数会转成一个巨大的无符号数。
+    int requested = 40;
+    if (parsed.contains("n")) {
+        if (!parsed["n"].is_number()) {
+            return 2;
+        }
+        const double raw = parsed["n"].get<double>();
+        if (raw >= 1000) {
+            requested = 1000;
+        } else if (raw >= 1) {
+            requested = static_cast<int>(raw);
+        } else {
+            requested = 1;
+        }
+    }
+    const std::size_t count = static_cast<std::size_t>(requested);
 
     // 没有日期参数就取该插件最新的那份日志。
     std::filesystem::path latest;
@@ -226,12 +311,27 @@ int32_t on_tail(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* o
 
 int32_t on_query(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
-    const std::string plugin = parsed.value("plugin", "");
+    const std::string plugin = plugin_arg(parsed);
     if (!valid_plugin_id(plugin)) {
         return 2;
     }
-    const std::string date = parsed.value("date", today_text());
-    const std::string level = parsed.value("level", "");
+    std::string date = today_text();
+    if (parsed.contains("date")) {
+        if (!parsed["date"].is_string() || !valid_date(parsed["date"].get<std::string>())) {
+            return 2;
+        }
+        date = parsed["date"].get<std::string>();
+    }
+    std::string level;
+    if (parsed.contains("level")) {
+        if (!parsed["level"].is_string()) {
+            return 2;
+        }
+        level = parsed["level"].get<std::string>();
+        if (!level.empty() && !valid_level(level)) {
+            return 2;
+        }
+    }
 
     // 逐行读过就丢：内存只与命中的行数有关，与文件大小无关。
     nlohmann::json result;
@@ -241,12 +341,11 @@ int32_t on_query(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* 
 
     std::ifstream input(log_path_of(plugin, date), std::ios::binary);
     std::string line;
-    const std::string tag = "[" + level + "]";
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
-        if (!level.empty() && line.find(tag) == std::string::npos) {
+        if (!level.empty() && !line_has_level(line, level)) {
             continue;
         }
         result["lines"].push_back(line);
@@ -277,6 +376,10 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
     g.log_dir = data_root_of(data_dir) / "logs";
     std::error_code ec;
     std::filesystem::create_directories(g.log_dir, ec);
+    if (ec) {
+        // 目录建不出来时照样装载：写日志会返回 written:false，别把整个插件拖下水。
+        std::fprintf(stderr, "[core-log] 建日志目录失败：%s\n", g.log_dir.string().c_str());
+    }
 
     const struct {
         const char* name;

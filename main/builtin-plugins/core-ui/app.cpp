@@ -73,10 +73,18 @@ bool ui_requires_auth(const std::filesystem::path& data_root) {
         return true;
     }
     const auto parsed = nlohmann::json::parse(reply.result, nullptr, false);
-    if (parsed.is_discarded() || !parsed.contains("found") || !parsed["found"].get<bool>()) {
+    // 宿主回的键可能不存在（found=false），也可能字段类型不对；后者按异常处理，
+    // 一并当作「需要认证」，并留下日志方便排查配置页的问题。
+    if (parsed.is_discarded() || !parsed.is_object() || !parsed.contains("found") ||
+        !parsed["found"].is_boolean()) {
+        std::fprintf(stderr, "[core-ui] core-ui.auth 应答不完整，按需要认证处理\n");
         return true;
     }
-    return !(parsed["value"].is_string() && parsed["value"].get<std::string>() == "off");
+    if (!parsed["found"].get<bool>()) {
+        return true;
+    }
+    return !(parsed.contains("value") && parsed["value"].is_string() &&
+             parsed["value"].get<std::string>() == "off");
 }
 
 // 把界面端口写进 registry.json。读-改-写，只动 ui_port 一个字段。

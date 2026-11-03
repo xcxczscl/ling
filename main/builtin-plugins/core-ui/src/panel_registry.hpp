@@ -38,6 +38,9 @@ public:
     // 把 kernel.plugins 的结果套到清单上，并记下这次刷新的时刻。
     void apply_states(const nlohmann::json& plugins);
 
+    // 探测失败或结果不完整时也要推进刷新时刻：否则 stale 永远为真，每个请求都去等超时。
+    void mark_refreshed();
+
     // 距上次刷新是否已超过 TTL（2 秒）。有请求才问，界面没开就不扫盘。
     bool stale(std::chrono::steady_clock::time_point now) const;
 

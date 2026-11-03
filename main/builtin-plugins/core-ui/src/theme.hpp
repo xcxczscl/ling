@@ -2,7 +2,8 @@
 //
 // 依据 docs/ling/builtin-plugins/core-ui/04-详细设计/04-设计令牌与主题.md §2：
 // 26 个令牌 = 14 个颜色 + 4 个字号 + 5 个间距 + 3 个形状，不设预留位。
-// 加令牌时连同亮暗两套取值一起加，并同步 shell.css 的 :root 块（构建脚本会比对）。
+// 加令牌时连同亮暗两套取值一起加，并同步 shell.css 的 :root 块。
+// 当前没有自动比对的脚本或构建步骤，保持一致要靠人工。
 #pragma once
 
 #include <string>

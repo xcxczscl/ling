@@ -84,7 +84,7 @@ void init_webview() {
                             }
                             g_state.controller = ctl;
                             g_state.controller->get_CoreWebView2(&g_state.webview);
-                            // 右键菜单只留复制与刷新；关掉开发工具。
+                            // 关掉开发工具；右键菜单沿用 WebView2 的默认菜单，这里不做自定义。
                             if (g_state.webview != nullptr) {
                                 ICoreWebView2Settings* settings = nullptr;
                                 g_state.webview->get_Settings(&settings);

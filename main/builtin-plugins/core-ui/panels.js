@@ -20,6 +20,8 @@
   const MAX_DRAG_BYTES = 8 * 1024;
 
   const frames = new Map();   // id → 面板状态
+  const opening = new Set();  // 正在预检、还没建框的 id，防止同一面板被开两次
+  const cancelled = new Set(); // 预检期间被关掉的 id，预检回来后就别建框了
   let order = [];             // 打开顺序，也就是左到右的顺序
   let widths = {};            // id → 占功能区的比例
   let onChange = function () {};
@@ -246,107 +248,125 @@
       setTimeout(() => entry.section.classList.remove("flash"), 300);
       return;
     }
-
-    if (order.length >= MAX_PANELS) {
-      const oldest = order[0];
-      const oldestTitle = frames.get(oldest).info.title;
-      close(oldest, "evicted", true);
-      L.toast("已关闭较早打开的：" + oldestTitle, "info");
-    }
-
-    const url = info.entry || "/panel/" + id + "/";
-    const check = await precheck(url);
-
-    const section = document.createElement("section");
-    section.className = "panel";
-    section.dataset.plugin = id;
-
-    const bar = document.createElement("header");
-    bar.className = "panel-bar";
-    const title = document.createElement("span");
-    title.className = "panel-title";
-    title.textContent = info.title;
-    title.title = info.title;
-    const closeButton = document.createElement("button");
-    closeButton.type = "button";
-    closeButton.className = "panel-close";
-    closeButton.setAttribute("aria-label", "关闭");
-    closeButton.textContent = "×";
-    closeButton.addEventListener("click", () => close(id, "closed"));
-    bar.appendChild(title);
-    bar.appendChild(closeButton);
-
-    const body = document.createElement("div");
-    body.className = "panel-body";
-    section.appendChild(bar);
-    section.appendChild(body);
-
-    const entry = {
-      info,
-      section,
-      iframe: null,
-      ready: false,
-      pending: new Map(),
-      loadTimer: 0
-    };
-    frames.set(id, entry);
-    order.push(id);
-    if (typeof widths[id] !== "number") {
-      widths[id] = 1 / order.length;
-    }
-    area().appendChild(section);
-    relayout();
-
-    onChange();
-    saveLayout();
-
-    if (info.state && info.state !== "running") {
-      // 停用或启动失败：不建 iframe，直接在外框里说清楚，并给一个「启用」。
-      showInactive(entry, info);
+    if (opening.has(id)) {
+      // 预检期间用户又点了一次打开：撤掉方才记下的取消，让排队中的这次继续。
+      // 否则第一次 open 见到 cancelled 就放弃，重开请求会石沉大海。
+      cancelled.delete(id);
       return;
     }
-
-    if (!check.ok) {
-      // 预检失败就不建 iframe：跨源 iframe 加载 404 时照样触发 load，
-      // 外壳读不到里面，分不清「渲染了但空白」与「文件不存在」。
-      if (check.timeout) {
-        showMessage(entry, "面板文件读取超时", url);
-      } else if (check.status === 404) {
-        showMessage(entry, "面板文件不存在", url);
-      } else {
-        showMessage(entry, "面板打不开（HTTP " + check.status + "）", url);
+    opening.add(id);
+    cancelled.delete(id);
+    try {
+      if (order.length >= MAX_PANELS) {
+        const oldest = order[0];
+        const oldestEntry = frames.get(oldest);
+        if (oldestEntry) {
+          const oldestTitle = oldestEntry.info.title;
+          close(oldest, "evicted", true);
+          L.toast("已关闭较早打开的：" + oldestTitle, "info");
+        }
       }
-      return;
-    }
 
-    const iframe = document.createElement("iframe");
-    // 不给 allow-same-origin：面板因此是不透明源，读不到外壳的存储，
-    // 也发不出带 token 的请求（docs/ling/builtin-plugins/core-ui/06 §4）。
-    iframe.setAttribute("sandbox", "allow-scripts allow-popups allow-downloads");
-    iframe.setAttribute("referrerpolicy", "no-referrer");
-    iframe.src = url;
-    entry.iframe = iframe;
-    body.appendChild(iframe);
-
-    entry.loadTimer = setTimeout(() => {
-      if (!entry.ready) {
-        showMessage(entry, "面板加载超时", url);
+      const url = info.entry || "/panel/" + id + "/";
+      const check = await precheck(url);
+      if (cancelled.has(id)) {
+        return;  // 预检期间用户已经关掉它了
       }
-    }, LOAD_TIMEOUT_MS);
 
-    iframe.addEventListener("load", () => {
-      clearTimeout(entry.loadTimer);
-      clearMessage(entry);
-      entry.ready = true;
-      post(entry, {
-        type: "init",
-        v: 1,
-        pluginId: id,
-        title: info.title,
-        theme: L.theme.get(),
-        tokens: L.theme.tokens()
+      const section = document.createElement("section");
+      section.className = "panel";
+      section.dataset.plugin = id;
+
+      const bar = document.createElement("header");
+      bar.className = "panel-bar";
+      const title = document.createElement("span");
+      title.className = "panel-title";
+      title.textContent = info.title;
+      title.title = info.title;
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "panel-close";
+      closeButton.setAttribute("aria-label", "关闭");
+      closeButton.textContent = "×";
+      closeButton.addEventListener("click", () => close(id, "closed"));
+      bar.appendChild(title);
+      bar.appendChild(closeButton);
+
+      const body = document.createElement("div");
+      body.className = "panel-body";
+      section.appendChild(bar);
+      section.appendChild(body);
+
+      const entry = {
+        info,
+        section,
+        iframe: null,
+        ready: false,
+        pending: new Map(),
+        loadTimer: 0
+      };
+      frames.set(id, entry);
+      order.push(id);
+      if (typeof widths[id] !== "number") {
+        widths[id] = 1 / order.length;
+      }
+      area().appendChild(section);
+      relayout();
+
+      onChange();
+      saveLayout();
+
+      if (info.state && info.state !== "running") {
+        // 停用或启动失败：不建 iframe，直接在外框里说清楚，并给一个「启用」。
+        showInactive(entry, info);
+        return;
+      }
+
+      if (!check.ok) {
+        // 预检失败就不建 iframe：跨源 iframe 加载 404 时照样触发 load，
+        // 外壳读不到里面，分不清「渲染了但空白」与「文件不存在」。
+        if (check.timeout) {
+          showMessage(entry, "面板文件读取超时", url);
+        } else if (check.status === 404) {
+          showMessage(entry, "面板文件不存在", url);
+        } else {
+          showMessage(entry, "面板打不开（HTTP " + check.status + "）", url);
+        }
+        return;
+      }
+
+      const iframe = document.createElement("iframe");
+      // 不给 allow-same-origin：面板因此是不透明源，读不到外壳的存储，
+      // 也发不出带 token 的请求（docs/ling/builtin-plugins/core-ui/06 §4）。
+      iframe.setAttribute("sandbox", "allow-scripts allow-popups allow-downloads");
+      iframe.setAttribute("referrerpolicy", "no-referrer");
+      iframe.src = url;
+      entry.iframe = iframe;
+      body.appendChild(iframe);
+
+      entry.loadTimer = setTimeout(() => {
+        if (!entry.ready) {
+          showMessage(entry, "面板加载超时", url);
+        }
+      }, LOAD_TIMEOUT_MS);
+
+      iframe.addEventListener("load", () => {
+        clearTimeout(entry.loadTimer);
+        clearMessage(entry);
+        entry.ready = true;
+        post(entry, {
+          type: "init",
+          v: 1,
+          pluginId: id,
+          title: info.title,
+          theme: L.theme.get(),
+          tokens: L.theme.tokens()
+        });
       });
-    });
+    } finally {
+      opening.delete(id);
+      cancelled.delete(id);
+    }
   }
 
   function post(entry, message) {
@@ -358,6 +378,11 @@
   }
 
   function close(id, reason, immediate) {
+    if (opening.has(id) && !frames.has(id)) {
+      // 面板还在预检，框都没建：记下取消，open 拿到预检结果就放弃。
+      cancelled.add(id);
+      return;
+    }
     const entry = frames.get(id);
     if (!entry) {
       return;
@@ -591,10 +616,13 @@
 
     // 落点按拖拽开始时的几何算：拖拽期间面板宽度一般不会变，
     // 每次都重新布局反而会让鼠标跟丢。
-    const rects = order.map((id) => ({
-      id,
-      rect: frames.get(id).section.getBoundingClientRect()
-    }));
+    const rects = order
+      .map((id) => ({ id, entry: frames.get(id) }))
+      .filter((item) => item.entry)
+      .map((item) => ({
+        id: item.id,
+        rect: item.entry.section.getBoundingClientRect()
+      }));
     const move = (event) => {
       hint.style.left = event.clientX + 12 + "px";
       hint.style.top = event.clientY + 12 + "px";
@@ -610,7 +638,7 @@
           event.clientY >= item.rect.top &&
           event.clientY <= item.rect.bottom
       );
-      if (!target) {
+      if (!target || !frames.get(target.id)) {
         reply(source, message.id, {
           ok: false,
           error: { code: "E_UI_FORBIDDEN", message: "没有落到任何面板上" }

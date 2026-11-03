@@ -27,6 +27,8 @@ struct State {
     void* ctx = nullptr;
     std::filesystem::path settings_path;
     nlohmann::json document;
+    // 配置文件解析失败时置位：后续任何写入都拒绝，避免用空配置覆盖原文件。
+    bool broken = false;
 };
 
 State g;
@@ -45,6 +47,10 @@ std::filesystem::path data_root_of(const char* data_dir) {
 }
 
 bool save_document() {
+    if (g.broken) {
+        // 坏文件保持原样：等用户自己修好或删掉，再看下一次装载。
+        return false;
+    }
     const std::string text = g.document.dump(2);
     if (text.size() > kMaxSettingsBytes) {
         return false;
@@ -60,11 +66,19 @@ bool save_document() {
     output.write(text.data(), static_cast<std::streamsize>(text.size()));
     output.flush();
     if (!output) {
+        output.close();
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
     output.close();
 
-    return ling::sys::atomic_replace(tmp_path, tmp);
+    if (!ling::sys::atomic_replace(tmp_path, tmp)) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        return false;
+    }
+    return true;
 }
 
 // 载入结果。三种结果对应三种处理方式，不能混成一个 bool：
@@ -87,8 +101,28 @@ LoadResult load_document() {
                      g.settings_path.string().c_str());
         return LoadResult::kBroken;
     }
-    if (parsed.value("schema_version", 0) > kSchemaVersion) {
-        return LoadResult::kTooNew;
+    if (parsed.contains("schema_version")) {
+        if (!parsed["schema_version"].is_number_integer()) {
+            // 版本字段都不是整数，这份文件已经不可信，按坏文件处理。
+            return LoadResult::kBroken;
+        }
+        // 先按无符号读，避免超大整数走 get<int> 抛异常穿透插件入口。
+        if (parsed["schema_version"].is_number_unsigned()) {
+            if (parsed["schema_version"].get<std::uint64_t>() >
+                static_cast<std::uint64_t>(kSchemaVersion)) {
+                return LoadResult::kTooNew;
+            }
+        } else if (parsed["schema_version"].is_number_integer()) {
+            const std::int64_t raw = parsed["schema_version"].get<std::int64_t>();
+            if (raw < 0) {
+                return LoadResult::kBroken;
+            }
+            if (raw > kSchemaVersion) {
+                return LoadResult::kTooNew;
+            }
+        } else {
+            return LoadResult::kBroken;
+        }
     }
     if (parsed.contains("entries") && parsed["entries"].is_object()) {
         g.document["entries"] = parsed["entries"];
@@ -252,13 +286,20 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
     g.ctx = ctx;
     g.settings_path = data_root_of(data_dir) / "settings.json";
 
-    if (load_document() == LoadResult::kTooNew) {
+    const auto loaded = load_document();
+    if (loaded == LoadResult::kTooNew) {
         // 拒绝装载而不是按空配置继续：继续的话下一次写入会把新格式覆盖成旧格式。
         std::fprintf(stderr,
                      "[core-settings] %s 由更高版本的 ling 写入，本次不装载；"
                      "请升级 ling 或换回原来的版本\n",
                      g.settings_path.string().c_str());
         return 5;
+    }
+    if (loaded == LoadResult::kBroken) {
+        // 记住坏文件状态，之后所有写入都返回 E_IO，不会把用户的配置冲掉。
+        g.broken = true;
+        std::fprintf(stderr, "[core-settings] %s 已损坏，本次按空配置只读继续，写入会被拒绝\n",
+                     g.settings_path.string().c_str());
     }
 
     // requires_mask 只有 fs：这个插件只碰自己的配置文件。
