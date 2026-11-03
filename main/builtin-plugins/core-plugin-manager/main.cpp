@@ -41,7 +41,9 @@ int32_t reply_json(const nlohmann::json& value, uint8_t** out, size_t* out_len) 
     return 0;
 }
 
-nlohmann::json parse_args(const uint8_t* args, size_t len) {
+// 这是给插件内其他方法共用的参数解析。当前几个方法都不带参数，GCC 因此会报
+// 「定义了没用」，MSVC 不报；加 [[maybe_unused]] 让两个编译器都认。
+[[maybe_unused]] nlohmann::json parse_args(const uint8_t* args, size_t len) {
     if (args == nullptr || len == 0) {
         return nlohmann::json::object();
     }

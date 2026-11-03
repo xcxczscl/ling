@@ -414,6 +414,37 @@ int32_t on_validate(void*, const uint8_t* args, size_t len, uint8_t** out, size_
     return reply_json({{"ok", true}, {"cron", cron_text}}, out, out_len);
 }
 
+// 启用与停用：只改 enabled 一个字段并落盘，不动时间表与参数。
+// 拆成两个方法而不是一个带布尔参数，是因为方法名本身就是文档
+// （docs/ling/builtin-plugins/core-ui/04-详细设计/01 §4 的 jobs.setEnabled 一行）。
+int32_t set_enabled(const uint8_t* args, size_t len, bool enabled, uint8_t** out,
+                    size_t* out_len) {
+    const auto parsed = parse_args(args, len);
+    const std::string name = parsed.value("name", "");
+    if (!valid_name(name)) {
+        return 2;
+    }
+    const auto it = g.jobs.find(name);
+    if (it == g.jobs.end()) {
+        return 5;  // 没有这个任务
+    }
+    Job job = it->second;
+    job.enabled = enabled;
+    if (!put_job(job)) {
+        return 4;
+    }
+    it->second = job;
+    return reply_json({{"name", name}, {"enabled", enabled}}, out, out_len);
+}
+
+int32_t on_enable(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
+    return set_enabled(args, len, true, out, out_len);
+}
+
+int32_t on_disable(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
+    return set_enabled(args, len, false, out, out_len);
+}
+
 int32_t on_cancel(void*, const uint8_t* args, size_t len, uint8_t** out, size_t* out_len) {
     const auto parsed = parse_args(args, len);
     const std::string name = parsed.value("name", "");
@@ -439,6 +470,9 @@ int32_t on_list(void*, const uint8_t*, size_t, uint8_t** out, size_t* out_len) {
                         {"method", job.method},
                         {"catch_up", job.catch_up},
                         {"enabled", job.enabled},
+                        {"params", job.args_json.empty()
+                                       ? nlohmann::json(nullptr)
+                                       : nlohmann::json::parse(job.args_json, nullptr, false)},
                         {"last_fired", job.last_fired}});
     }
     return reply_json({{"jobs", jobs}}, out, out_len);
@@ -543,6 +577,8 @@ LING_PLUGIN_EXPORT int32_t ling_plugin_entry(const ling_host_api* host,
         {"core-job.validate", &on_validate},
         {"core-job.cancel", &on_cancel},
         {"core-job.list", &on_list},
+        {"core-job.enable", &on_enable},
+        {"core-job.disable", &on_disable},
     };
     for (const auto& method : methods) {
         if (host->register_method(ctx, method.name, reinterpret_cast<void*>(method.fn), nullptr,
