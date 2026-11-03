@@ -33,7 +33,7 @@ M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「�
 
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
-| ling 宿主（`main/`） | 已定稿（`main/` 00–03、05–12 各一份、04-详细设计四份、README 与 M0 各一份，共 18 份；不含 `plugin-support/`） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
+| ling 宿主（`main/`） | 已定稿（`main/` 00–03、05–12 各一份、04-详细设计五份、README 与 M0 各一份，共 19 份；不含 `plugin-support/`） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
 | 内置插件（`main/builtin-plugins/`） | 四个已定稿，`core-ui` 初定（docs/ling/README.md） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
 | 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（plugin-support/01 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
 | Python SDK（`main/SDK/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
@@ -192,8 +192,8 @@ python tests/acceptance/l5_ui.py --preset win-release       # 界面（webui 版
 4. [`docs/ling/main/01-需求规格.md`](docs/ling/main/01-需求规格.md) — 宿主必须做到什么，共 127 条
 5. [`docs/ling/main/02-技术选型.md`](docs/ling/main/02-技术选型.md) — 用什么语言、插件怎么装、为什么这么选
 6. [`docs/ling/main/03-架构设计.md`](docs/ling/main/03-架构设计.md) — 分成哪几块、状态放哪、谁改谁读
-7. `docs/ling/main/04-详细设计/` — 四份实现级设计：
-   [01 内核四服务](docs/ling/main/04-详细设计/01-内核四服务.md) · [02 依赖解析与调和](docs/ling/main/04-详细设计/02-依赖解析与调和.md) · [03 热更新](docs/ling/main/04-详细设计/03-热更新.md) · [04 管理端口与命令行](docs/ling/main/04-详细设计/04-管理端口与命令行.md)
+7. `docs/ling/main/04-详细设计/` — 五份实现级设计：
+   [01 内核四服务](docs/ling/main/04-详细设计/01-内核四服务.md) · [02 依赖解析与调和](docs/ling/main/04-详细设计/02-依赖解析与调和.md) · [03 热更新](docs/ling/main/04-详细设计/03-热更新.md) · [04 管理端口与命令行](docs/ling/main/04-详细设计/04-管理端口与命令行.md) · [05 上下文与效应账本](docs/ling/main/04-详细设计/05-上下文与效应账本.md)
 8. `docs/ling/plugin-support/` — 写插件的契约：
    [01 插件装载与接口](docs/ling/plugin-support/01-插件装载与接口.md) · [02 上下文与效应账本](docs/ling/plugin-support/02-上下文与效应账本.md) · [03 最小插件样板](docs/ling/plugin-support/03-最小插件样板.md)
 9. [`docs/ling/main/05-构造与开发指南.md`](docs/ling/main/05-构造与开发指南.md) — 代码写在哪、按什么顺序写、怎么编怎么跑

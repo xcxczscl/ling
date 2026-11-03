@@ -66,7 +66,8 @@ ling 是插件宿主，本身不提供业务功能，全部功能由插件提供
 | 内容 | 去哪 |
 |---|---|
 | 清单字段、C ABI、错误码 | `docs/ling/plugin-support/01-插件装载与接口.md` |
-| 上下文与账本 | `docs/ling/plugin-support/02-上下文与效应账本.md` |
+| 上下文接口与插件侧撤销 | `docs/ling/plugin-support/02-上下文与效应账本.md` |
+| 账本结构、按代分段与撤销实现 | `docs/ling/main/04-详细设计/05-上下文与效应账本.md` |
 | 插件界面的声明、资源与消息协议 | `docs/ling/plugin-support/ui/00-总览与约定.md` |
 | 管理端口的帧与子命令 | `docs/ling/main/04-详细设计/04-管理端口与命令行.md` |
 | 调和的激活顺序 | `docs/ling/main/04-详细设计/02-依赖解析与调和.md` |
@@ -298,7 +299,8 @@ MVP 做四个内置插件（`docs/ling/main/11-MVP 范围.md` §4.2 第三条：
 | `docs/ling/main/00-总览与术语.md` | 零内容边界（§2.1） |
 | `docs/ling/main/03-架构设计.md` | 内置插件的定位与 A-8 决策 |
 | `docs/ling/plugin-support/01-插件装载与接口.md` | 清单、C ABI、错误码 |
-| `docs/ling/plugin-support/02-上下文与效应账本.md` | `write_config` 与账本 |
+| `docs/ling/plugin-support/02-上下文与效应账本.md` | `write_config` 与插件侧撤销用法 |
+| `docs/ling/main/04-详细设计/05-上下文与效应账本.md` | 账本结构、容量、按代分段与撤销实现 |
 | `docs/ling/main/04-详细设计/04-管理端口与命令行.md` | `kernel.*` 方法与两条日志路径 |
 
 ## 变更记录
@@ -306,3 +308,4 @@ MVP 做四个内置插件（`docs/ling/main/11-MVP 范围.md` §4.2 第三条：
 | 日期 | 改了什么 | 为什么 |
 |---|---|---|
 | 2026-11-03 | §10 第 1 条的落点由 `plugin-support/01` 改为完整路径 | 跨文档缩写无法唯一定位 |
+| 2026-11-03 | 上下文与账本拆成两处：接口在 `docs/ling/plugin-support/02-上下文与效应账本.md`，实现在 `docs/ling/main/04-详细设计/05-上下文与效应账本.md` | 账本技术细节移回 main，plugin-support 只留插件作者用的接口 |
