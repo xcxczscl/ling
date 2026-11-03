@@ -33,7 +33,7 @@ M4 的双轨指两条插件轨道：进程内动态库，和独立进程的「�
 
 | 项目 | 设计文档 | 代码 |
 |---|---|---|
-| ling 宿主（`main/`） | 已定稿（`main/` 00–12 各一份、04-详细设计四份、README 与 M0 各一份，共 18 份；不含 `plugin-support/`） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
+| ling 宿主（`main/`） | 已定稿（`main/` 00–03、05–12 各一份、04-详细设计四份、README 与 M0 各一份，共 18 份；不含 `plugin-support/`） | 装、卸、调用、撤销、事件广播、管理端口、`serve`/`shutdown` 全部可用 |
 | 内置插件（`main/builtin-plugins/`） | 四个已定稿，`core-ui` 初定（docs/ling/README.md） | `core-settings`、`core-plugin-manager`、`core-log`、`core-job`、`core-ui` 五个 |
 | 侧车轨道（`main/sys/` + `src/sidecar_proto.cpp`） | 已定稿（plugin-support/01 §8） | 协议、握手、代登记、调用、崩溃重启、按需启停；C++ 与 Python 两种运行时 |
 | Python SDK（`main/SDK/python/`） | —— | `ling_sidecar.py`，随宿主分发 |
