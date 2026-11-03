@@ -14,6 +14,7 @@ desktop 标志：zip 里带上 desktop 版 core-ui（默认构建是 webui）。
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -41,9 +42,38 @@ def crt_dlls():
 
 
 def version_string(exe):
-    out = subprocess.run([str(exe), "--version"], capture_output=True, text=True).stdout.strip()
-    # 形如 "ling 0.1.0"，取后半段。
-    return out.split()[-1] if out else "0.0.0"
+    """读 ling.exe --version 里的三段式版本号；读不到就返回 None，别用 0.0.0 冒充。"""
+    done = subprocess.run([str(exe), "--version"], capture_output=True, text=True)
+    if done.returncode != 0:
+        print(f"读版本失败：{exe} --version 返回 {done.returncode}", file=sys.stderr)
+        return None
+    out = (done.stdout or "").strip()
+    match = re.search(r"\b\d+\.\d+\.\d+\b", out)
+    if not match:
+        print(f"读版本失败：{exe} --version 的输出里没有三段式版本号：{out[:80]!r}",
+              file=sys.stderr)
+        return None
+    return match.group(0)
+
+
+def missing_inputs(run):
+    """打包前检查必需输入。缺 CRT 或任一内置插件产物都会打出坏包，必须停下。"""
+    problems = []
+    if not CRT_DIR.is_dir():
+        problems.append(f"缺少 VC++ 运行库目录：{CRT_DIR}")
+    elif not crt_dlls():
+        problems.append(f"VC++ 运行库目录里没有 DLL：{CRT_DIR}")
+    for pid in BUILTIN_PLUGINS:
+        if not (run / "plugins" / pid).is_dir():
+            problems.append(f"缺少内置插件产物：{run / 'plugins' / pid}")
+    return problems
+
+
+def report_missing(problems):
+    print("打包中止：以下必需输入缺失")
+    for item in problems:
+        print(f"  - {item}")
+    return 1
 
 
 def build_zip(preset, desktop):
@@ -52,8 +82,13 @@ def build_zip(preset, desktop):
     if not exe.exists():
         print(f"找不到 {exe}，先构建 {preset}")
         return 1
+    problems = missing_inputs(run)
+    if problems:
+        return report_missing(problems)
 
     version = version_string(exe)
+    if not version:
+        return 1
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     archive = dist / f"ling-{version}-win64.zip"
@@ -97,13 +132,18 @@ def build_zip(preset, desktop):
 
 def build_iss(preset):
     """生成 Inno Setup 脚本，交给机器上的 ISCC.exe 编译。"""
-    run = ROOT / "preset" if False else ROOT / "run" / preset
+    run = ROOT / "run" / preset
     exe = run / "ling.exe"
     if not exe.exists():
         print(f"找不到 {exe}，先构建 {preset}")
         return 1
+    problems = missing_inputs(run)
+    if problems:
+        return report_missing(problems)
 
     version = version_string(exe)
+    if not version:
+        return 1
     # 便携标记的空文件，作为 Inno 的源；勾选「便携模式」任务时才装。
     portable_stub = ROOT / "dist" / (PORTABLE_MARK + ".stub")
     portable_stub.write_bytes(b"")

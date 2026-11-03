@@ -11,6 +11,7 @@
 import argparse
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,8 @@ class Harness:
             [str(self.exe), *args, "--data-dir", str(self.data_root)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         return result.returncode, result.stdout, result.stderr
 
@@ -240,9 +243,11 @@ def case_l1_route(h):
     h.cli("uninstall", "demo-caller", "--purge")
     h.cli("install", str(h.artifacts / "demo-caller"))
     rc, out, err = h.cli("logs", "demo-caller")
+    # 宿主把「被调方不存在」统一成插件侧的失败码 2；只认这个具体结果，
+    # 别的调用失败（比如参数错、崩溃）不能算通过。
     h.check(
         "TC-203",
-        rc == 0 and ("E_PLUGIN_MISSING" in out or "call failed" in out),
+        rc == 0 and "call failed code=2" in out,
         out.strip()[:200],
     )
 
@@ -261,11 +266,16 @@ def case_l1_event(h):
     rc, out, err = h.cli("logs", "demo-caller")
     h.check("TC-208", rc == 0 and "event demo-a.pinged pong" in out, out.strip()[:200])
 
-    # 内核状态事件也被订阅到（订阅的是精确主题 kernel.plugin.state）
+    # 内核状态事件也被订阅到（订阅的是精确主题 kernel.plugin.state）。
+    # 按行匹配结构，别用「out 里同时出现两个词」这种松散的判断。
+    kernel_lines = [
+        line for line in out.splitlines()
+        if re.search(r"event kernel\.plugin\.state .*\"plugin_id\":\s*\"demo-caller\"", line)
+    ]
     h.check(
         "TC-208/内核事件",
-        "kernel.plugin.state" in out and "demo-caller" in out,
-        out.strip()[:200],
+        rc == 0 and bool(kernel_lines),
+        kernel_lines[0][:200] if kernel_lines else out.strip()[:200],
     )
 
     # TC-209 越权广播：需要专用夹具插件，MVP 无此夹具

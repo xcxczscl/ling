@@ -2,7 +2,9 @@
 // docs/ling/04-详细设计/01-内核四服务.md §5.1（注册六步校验中的 2 至 6）与 §5.2、§5.3。
 #include <catch_amalgamated.hpp>
 
+#include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,24 @@ int32_t echo_handler(void* ctx, const uint8_t* args, size_t args_len, uint8_t** 
 }
 
 int32_t failing_handler(void*, const uint8_t*, size_t, uint8_t**, size_t*) { return 1; }
+
+int32_t failing_handler_seven(void*, const uint8_t*, size_t, uint8_t**, size_t*) { return 7; }
+
+int32_t throwing_handler(void*, const uint8_t*, size_t, uint8_t**, size_t*) {
+    throw std::runtime_error("插件内部炸了");
+}
+
+// 故意输出超过 1 MB：路由器要整段丢弃并按 E_PAYLOAD_TOO_LARGE 报错。
+int32_t huge_output_handler(void*, const uint8_t*, size_t, uint8_t** out, size_t* out_len) {
+    const size_t len = 1024 * 1024 + 1;
+    auto* buffer = static_cast<uint8_t*>(std::malloc(len));
+    if (buffer == nullptr) {
+        return 1;
+    }
+    *out = buffer;
+    *out_len = len;
+    return 0;
+}
 
 }  // namespace
 
@@ -93,12 +113,65 @@ TEST_CASE("载荷超过 1 MB 被拒", "[router]") {
     CHECK(outcome.code == ling::err::kPayloadTooLarge);
 }
 
+namespace {
+
+// 输出缓冲区非空但长度为 0：合法结果，路由器要归还缓冲并返回空数据。
+int32_t zero_output_handler(void*, const uint8_t*, size_t, uint8_t** out, size_t* out_len) {
+    auto* buffer = static_cast<uint8_t*>(std::malloc(16));
+    if (buffer == nullptr) {
+        return 1;
+    }
+    *out = buffer;
+    *out_len = 0;
+    return 0;
+}
+
+}  // namespace
+
+TEST_CASE("输出缓冲区非空但长度为 0 时正常返回", "[router]") {
+    ling::Router router;
+    router.register_method("demo-a", "demo-a.zero",
+                           reinterpret_cast<void*>(&zero_output_handler), nullptr, 0);
+    const auto outcome = router.call("demo-a.zero", nullptr, 0);
+    CHECK(outcome.code.empty());
+    CHECK(outcome.data.empty());
+}
+
 TEST_CASE("处理函数返回非 0 时映射为 E_INTERNAL", "[router]") {
     ling::Router router;
     router.register_method("demo-a", "demo-a.boom", reinterpret_cast<void*>(&failing_handler),
                            nullptr, 0);
     const auto outcome = router.call("demo-a.boom", nullptr, 0);
     CHECK(outcome.code == ling::err::kInternal);
+}
+
+TEST_CASE("不同的非 0 返回码都按 E_INTERNAL 处理", "[router]") {
+    // 进程内 ABI 只有 int32 返回码，映射不到字符串错误码表，所以 router 统一记日志后
+    // 回落 E_INTERNAL；这条用例把这个语义钉住，避免有人以为能「原样透传」。
+    ling::Router router;
+    router.register_method("demo-a", "demo-a.seven",
+                           reinterpret_cast<void*>(&failing_handler_seven), nullptr, 0);
+    const auto outcome = router.call("demo-a.seven", nullptr, 0);
+    CHECK(outcome.code == ling::err::kInternal);
+    CHECK(outcome.data.empty());
+}
+
+TEST_CASE("处理函数抛异常不穿过边界，映射为 E_INTERNAL", "[router]") {
+    ling::Router router;
+    router.register_method("demo-a", "demo-a.throw", reinterpret_cast<void*>(&throwing_handler),
+                           nullptr, 0);
+    const auto outcome = router.call("demo-a.throw", nullptr, 0);
+    CHECK(outcome.code == ling::err::kInternal);
+    CHECK(outcome.data.empty());
+}
+
+TEST_CASE("输出超过 1 MB 被拒且不搬运数据", "[router]") {
+    ling::Router router;
+    router.register_method("demo-a", "demo-a.huge",
+                           reinterpret_cast<void*>(&huge_output_handler), nullptr, 0);
+    const auto outcome = router.call("demo-a.huge", nullptr, 0);
+    CHECK(outcome.code == ling::err::kPayloadTooLarge);
+    CHECK(outcome.data.empty());
 }
 
 TEST_CASE("批量注销按编号清空", "[router]") {

@@ -10,11 +10,13 @@ core-ui 现在是宿主自动预装并拉起的侧车插件，不再需要手动
 import argparse
 import json
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -34,6 +36,69 @@ def http(url, method="GET", token=None, body=None):
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode("utf-8", "replace")
+
+
+def http_headers(url, extra=None):
+    """发 GET 并返回（状态码, ETag）。用来验证条件请求的 304。"""
+    request = urllib.request.Request(url, method="GET")
+    for key, value in (extra or {}).items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.status, response.headers.get("ETag")
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("ETag")
+
+
+def raw_head(url):
+    """用原始 socket 发 HEAD，返回（状态行, 空行之后的剩余字节）。
+
+    urllib 对 HEAD 请求永远不返回 body，用它断言 body == "" 恒真，等于自证。
+    只有直接读套接字才能确认服务端真的没发正文。
+    """
+    parsed = urllib.parse.urlparse(url)
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=15) as sock:
+        target = parsed.path or "/"
+        request = ("HEAD " + target + " HTTP/1.1\r\nHost: " + parsed.netloc +
+                   "\r\nConnection: close\r\n\r\n")
+        sock.sendall(request.encode())
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        marker = data.find(b"\r\n\r\n")
+        if marker < 0:
+            return data.decode("utf-8", "replace").split("\r\n")[0], b""
+        head_end = marker + 4
+        rest = data[head_end:]
+        # 服务端答应 Connection: close，读到对方关闭为止；多出来的字节就是正文。
+        sock.settimeout(2)
+        try:
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                rest += chunk
+        except socket.timeout:
+            pass
+        return data[:head_end].decode("utf-8", "replace").split("\r\n")[0], rest
+
+
+def ui_pids(parent_pid):
+    """找本次 serve 进程拉起的 core-ui 子进程。避免按镜像名杀掉别的实例。"""
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='core-ui.exe'\" | "
+        f"Where-Object {{ $_.ParentProcessId -eq {parent_pid} }} | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return {int(part) for part in (done.stdout or "").split() if part.isdigit()}
 
 
 def main():
@@ -118,6 +183,10 @@ def main():
     check("接口无口令回 401", status == 401, str(status))
     status, _ = http(base + "/api/panels", "GET", token)
     check("接口只认 POST", status == 405, str(status))
+    status, body = http(base + "/api/panels", "POST", token, {"junk": "a" * 1100000})
+    check("请求体超过 1 MB 回 413",
+          status == 413 and json.loads(body)["error"]["code"] == "E_PAYLOAD_TOO_LARGE",
+          body[:80])
 
     # 面板资源五道检查：越界的几种写法都要落在 404，正常文件要读得出来。
     # 先装一个带 [ui] 的测试插件，面板才有东西可指。
@@ -126,6 +195,14 @@ def main():
     check("安装 ui-demo", status == 200 and json.loads(body)["ok"], body[:100])
     status, body = http(base + "/panel/ui-demo/index.html")
     check("面板文件可读", status == 200 and "<html" in body.lower(), str(status))
+    status_line, rest = raw_head(base + "/panel/ui-demo/index.html")
+    check("HEAD 只回头不回体",
+          " 200 " in status_line and rest == b"", status_line + " 剩余 " + repr(rest[:40]))
+    status, etag = http_headers(base + "/panel/ui-demo/index.html")
+    check("面板文件带 ETag", status == 200 and bool(etag), str(etag))
+    if etag:
+        status, _ = http_headers(base + "/panel/ui-demo/index.html", {"If-None-Match": etag})
+        check("带 If-None-Match 回 304", status == 304, str(status))
     status, _ = http(base + "/panel/ui-demo/../../registry.json")
     check("面板路径越界被拦", status == 404, str(status))
     status, _ = http(base + "/panel/ui-demo/%2e%2e%2fregistry.json")
@@ -163,7 +240,8 @@ def main():
           json.loads(body)["result"][0]["state"] == "stopped", body[:100])
     status, body = http(base + "/api/panel/call", "POST", token,
                         {"plugin": "ui-demo", "method": "ui-demo.echo"})
-    check("停用后调不动", status == 403, str(status))
+    check("停用后调不动",
+          status == 403 and json.loads(body)["error"]["code"] == "E_UI_FORBIDDEN", body[:100])
     http(base + "/api/enable", "POST", token, {"id": "ui-demo"})
 
     # 关于页的数据
@@ -212,14 +290,39 @@ def main():
     # 卸载 ui-demo（连数据）
     status, body = http(base + "/api/uninstall", "POST", token, {"id": "ui-demo", "purge": True})
     check("卸载 ui-demo", status == 200 and state_of("ui-demo") is None, str(state_of("ui-demo")))
+    status, _ = http(base + "/panel/ui-demo/index.html")
+    check("卸载后面板资源回 404", status == 404, str(status))
 
-    # 界面崩溃后宿主不受影响、2 秒重启
-    subprocess.run(["taskkill", "/IM", "core-ui.exe", "/F"],
-                   capture_output=True, text=True, errors="replace")
-    time.sleep(4)
-    item = state_of("core-ui")
-    check("界面崩溃后宿主还在、2 秒重启", item is not None and item["state"] == "activated",
-          str(item))
+    # 界面崩溃后宿主不受影响：只结束本次启动的 core-ui，等新进程与新端口就绪。
+    pids_before = ui_pids(host.pid)
+    old_pid = min(pids_before) if pids_before else None
+    check("找得到本次的 core-ui 子进程", old_pid is not None, str(sorted(pids_before)))
+    if old_pid is not None:
+        subprocess.run(["taskkill", "/PID", str(old_pid), "/F"],
+                       capture_output=True, text=True, errors="replace")
+        new_pid = None
+        restarted = False
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            fresh = ui_pids(host.pid) - {old_pid}
+            if fresh:
+                new_pid = min(fresh)
+                try:
+                    registry = json.loads((data / "registry.json").read_text(encoding="utf-8"))
+                    candidate = registry.get("ui_port")
+                    if candidate:
+                        status, _ = http(f"http://127.0.0.1:{candidate}/api/ui/theme.css")
+                        if status == 200:
+                            restarted = True
+                            break
+                except (FileNotFoundError, KeyError, json.JSONDecodeError):
+                    pass
+            time.sleep(0.5)
+        item = state_of("core-ui")
+        check("界面崩溃后宿主还在、按新 PID 重启",
+              item is not None and item["state"] == "activated" and new_pid is not None
+              and new_pid != old_pid and restarted,
+              f"old={old_pid} new={new_pid} ready={restarted} item={item}")
 
     # doctor：四项全正常时退出码 0
     code, out = ling("doctor")

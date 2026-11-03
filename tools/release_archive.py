@@ -9,7 +9,7 @@
 约定：
   - 只做正式版：版本号必须是三段式，不能带 -bN。
   - 输出到仓库根 archive/，该目录不进版本库。
-  - 宿主包内容：docs/、main/（不含 builtin-plugins/）、dist/、包内 README.md。
+  - 宿主包内容：docs/、main/（含 builtin-plugins/，内置插件随宿主任装）、dist/、包内 README.md。
   - 插件包内容：该插件的文档、源码、发行文件、包内 README.md。
 """
 
@@ -144,12 +144,12 @@ def write_ling_readme(staging, version):
 ## 还原方式
 
 1. 解压后得到 `docs/`、`main/`、`dist/` 三个目录。
-2. 用源码构建：构建步骤见 `docs/main/05-构造与开发指南.md` §7。
+2. 用源码构建：构建步骤见 `docs/ling/main/05-构造与开发指南.md` §7。
 3. 不想构建就直接用 `dist/` 里的便携 zip 或安装包。
 
 ## 说明
 
-- 宿主版本写在 `main/CMakeLists.txt` 的 `LING_VERSION`。
+- 宿主版本写在根 `CMakeLists.txt` 的 `LING_VERSION_MAJOR` / `LING_VERSION_MINOR` / `LING_VERSION_PATCH`。
 - 插件只需要在清单里写 `min_host` 声明最低宿主版本；宿主不需要声明它支持哪些插件。
 - 源码归档在仓库的 `main/archive/`，本包不是归档，是可直接使用的发行包。
 """
