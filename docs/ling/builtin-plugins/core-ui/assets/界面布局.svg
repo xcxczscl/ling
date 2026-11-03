@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 730" width="900" height="730" font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f6fed"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="730" fill="#ffffff"/>
+  <text x="40" y="30" font-size="17" font-weight="700" fill="#1f2328">core-ui 界面布局</text>
+  <text x="40" y="48" font-size="11.5" fill="#8a929e">一级界面没有独立首栏；窗口顶部直接是侧边栏与功能区</text>
+
+  <!-- 窗口 -->
+  <rect x="40" y="60" width="820" height="460" rx="10" fill="#ffffff" stroke="#c9ced6" stroke-width="1.4"/>
+
+  <!-- 侧边栏 -->
+  <path d="M40,70 a10,10 0 0 1 10,-10 h178 v460 h-178 a10,10 0 0 1 -10,-10 z" fill="#f6f7f9" stroke="#e3e6ea"/>
+  <text x="56" y="96" font-size="13" font-weight="700" fill="#1f2328">ling</text>
+
+  <rect x="52" y="116" width="164" height="34" rx="6" fill="#e8f0ff"/>
+  <rect x="52" y="116" width="3" height="34" rx="1.5" fill="#2f6fed"/>
+  <text x="68" y="138" font-size="12.5" fill="#1d3f8f">资源管理</text>
+  <text x="68" y="174" font-size="12.5" fill="#4a5260">播放器</text>
+  <rect x="52" y="154" width="164" height="34" rx="6" fill="none"/>
+
+  <text x="56" y="464" font-size="11" fill="#4a5260">● 宿主运行中</text>
+  <line x1="52" y1="474" x2="216" y2="474" stroke="#e3e6ea"/>
+  <text x="56" y="498" font-size="12.5" fill="#4a5260">设置</text>
+
+  <!-- 面板 A -->
+  <rect x="248" y="78" width="292" height="432" rx="8" fill="#ffffff" stroke="#c9ced6"/>
+  <rect x="248" y="78" width="292" height="30" rx="8" fill="#f3f5f8"/>
+  <rect x="248" y="100" width="292" height="8" fill="#f3f5f8"/>
+  <text x="262" y="98" font-size="12" font-weight="600" fill="#1f2328">资源管理</text>
+  <text x="524" y="98" font-size="12" fill="#8a929e">×</text>
+
+  <!-- 插件自己的工具栏 -->
+  <rect x="258" y="118" width="52" height="24" rx="4" fill="#2f6fed"/>
+  <text x="284" y="134" font-size="11" fill="#ffffff" text-anchor="middle">扫描</text>
+  <rect x="318" y="118" width="76" height="24" rx="4" fill="#ffffff" stroke="#c9ced6"/>
+  <text x="356" y="134" font-size="11" fill="#4a5260" text-anchor="middle">新建文件夹</text>
+
+  <!-- 目录树 -->
+  <rect x="258" y="154" width="96" height="336" rx="5" fill="#fafbfc" stroke="#e3e6ea"/>
+  <text x="268" y="174" font-size="11" fill="#4a5260">▾ 图片</text>
+  <text x="278" y="194" font-size="11" fill="#7a8390">▾ 2026</text>
+  <text x="268" y="214" font-size="11" fill="#4a5260">▾ 视频</text>
+  <text x="268" y="234" font-size="11" fill="#4a5260">▸ 文档</text>
+
+  <!-- 文件列表 -->
+  <rect x="362" y="154" width="168" height="336" rx="5" fill="#ffffff" stroke="#e3e6ea"/>
+  <rect x="362" y="154" width="168" height="22" rx="5" fill="#f3f5f8"/>
+  <text x="372" y="169" font-size="10.5" fill="#4a5260">文件名</text>
+  <text x="500" y="169" font-size="10.5" fill="#4a5260">大小</text>
+  <line x1="362" y1="200" x2="530" y2="200" stroke="#eef0f3"/>
+  <text x="372" y="192" font-size="10.5" fill="#3b4350">a.jpg</text>
+  <text x="500" y="192" font-size="10.5" fill="#7a8390">2.1M</text>
+  <line x1="362" y1="220" x2="530" y2="220" stroke="#eef0f3"/>
+  <text x="372" y="212" font-size="10.5" fill="#3b4350">b.mp4</text>
+  <text x="500" y="212" font-size="10.5" fill="#7a8390">84M</text>
+  <line x1="362" y1="240" x2="530" y2="240" stroke="#eef0f3"/>
+  <text x="372" y="232" font-size="10.5" fill="#3b4350">c.docx</text>
+  <text x="500" y="232" font-size="10.5" fill="#7a8390">18K</text>
+
+  <!-- 分隔条 -->
+  <rect x="540" y="78" width="18" height="432" fill="#fafbfc"/>
+  <line x1="549" y1="240" x2="549" y2="350" stroke="#c9ced6" stroke-width="1.4"/>
+  <circle cx="549" cy="268" r="1.6" fill="#8a929e"/>
+  <circle cx="549" cy="282" r="1.6" fill="#8a929e"/>
+  <circle cx="549" cy="296" r="1.6" fill="#8a929e"/>
+  <circle cx="549" cy="310" r="1.6" fill="#8a929e"/>
+  <circle cx="549" cy="324" r="1.6" fill="#8a929e"/>
+
+  <!-- 面板 B -->
+  <rect x="558" y="78" width="284" height="432" rx="8" fill="#ffffff" stroke="#c9ced6"/>
+  <rect x="558" y="78" width="284" height="30" rx="8" fill="#f3f5f8"/>
+  <rect x="558" y="100" width="284" height="8" fill="#f3f5f8"/>
+  <text x="572" y="98" font-size="12" font-weight="600" fill="#1f2328">播放器</text>
+  <text x="826" y="98" font-size="12" fill="#8a929e">×</text>
+
+  <!-- 播放器内容 -->
+  <rect x="568" y="118" width="264" height="180" rx="6" fill="#eef1f5" stroke="#e3e6ea"/>
+  <circle cx="700" cy="200" r="22" fill="#ffffff" stroke="#c9ced6"/>
+  <path d="M694,190 L712,200 L694,210 z" fill="#2f6fed"/>
+
+  <rect x="568" y="320" width="264" height="4" rx="2" fill="#e3e6ea"/>
+  <rect x="568" y="320" width="118" height="4" rx="2" fill="#2f6fed"/>
+  <circle cx="686" cy="322" r="5" fill="#2f6fed"/>
+  <text x="568" y="344" font-size="10" fill="#8a929e">01:24</text>
+  <text x="832" y="344" font-size="10" fill="#8a929e" text-anchor="end">04:07</text>
+
+  <circle cx="668" cy="372" r="13" fill="#ffffff" stroke="#c9ced6"/>
+  <circle cx="700" cy="372" r="17" fill="#2f6fed"/>
+  <path d="M695,364 L709,372 L695,380 z" fill="#ffffff"/>
+  <circle cx="732" cy="372" r="13" fill="#ffffff" stroke="#c9ced6"/>
+
+  <rect x="568" y="404" width="264" height="90" rx="6" fill="#fafbfc" stroke="#e3e6ea"/>
+  <text x="578" y="422" font-size="10.5" fill="#4a5260">播放列表</text>
+  <text x="578" y="444" font-size="10.5" fill="#7a8390">1　a.jpg</text>
+  <text x="578" y="462" font-size="10.5" fill="#7a8390">2　b.mp4</text>
+  <text x="578" y="480" font-size="10.5" fill="#7a8390">3　c.docx</text>
+
+  <!-- 标注 -->
+  <line x1="400" y1="72" x2="400" y2="78" stroke="#2f6fed" stroke-width="1.2" marker-end="url(#a)"/>
+  <text x="404" y="70" font-size="10.5" fill="#2f6fed">① 外框标题条（外壳绘制）</text>
+
+  <line x1="404" y1="130" x2="440" y2="130" stroke="#2f6fed" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <text x="444" y="127" font-size="10.5" fill="#2f6fed">② 插件自己的工具栏</text>
+  <text x="444" y="141" font-size="10" fill="#8a929e">在面板网页内部</text>
+
+  <text x="264" y="505" font-size="10.5" fill="#7a8390">③ 面板内容：iframe，与外壳不同源</text>
+
+  <line x1="549" y1="360" x2="549" y2="386" stroke="#2f6fed" stroke-width="1.2" marker-end="url(#a)"/>
+  <text x="549" y="400" font-size="10.5" fill="#2f6fed" text-anchor="middle">④ 拖动调宽</text>
+
+  <!-- 设置二级界面 -->
+  <rect x="40" y="548" width="820" height="140" rx="10" fill="#fbfcfd" stroke="#d8dde5"/>
+  <text x="56" y="572" font-size="12.5" font-weight="600" fill="#1f2328">设置（二级界面）</text>
+  <text x="844" y="572" font-size="10.5" fill="#8a929e" text-anchor="end">点侧边栏底部的「设置」进入</text>
+
+  <rect x="56" y="584" width="56" height="24" rx="4" fill="#e8f0ff"/>
+  <text x="84" y="600" font-size="10.5" fill="#1d3f8f" text-anchor="middle">插件</text>
+  <text x="148" y="600" font-size="10.5" fill="#4a5260" text-anchor="middle">日志</text>
+  <text x="212" y="600" font-size="10.5" fill="#4a5260" text-anchor="middle">配置</text>
+  <text x="276" y="600" font-size="10.5" fill="#4a5260" text-anchor="middle">任务</text>
+  <text x="340" y="600" font-size="10.5" fill="#4a5260" text-anchor="middle">外观</text>
+  <text x="404" y="600" font-size="10.5" fill="#4a5260" text-anchor="middle">关于</text>
+
+  <rect x="56" y="620" width="788" height="52" rx="6" fill="#ffffff" stroke="#e3e6ea"/>
+  <text x="70" y="642" font-size="10.5" fill="#7a8390">插件列表：名称 · 版本 · 状态 · 类型　｜　安装 / 停用 / 卸载　｜　筛选与搜索</text>
+  <text x="70" y="660" font-size="10.5" fill="#a6adb8">原有五个管理视图整体搬到这一层，一级界面不再出现它们</text>
+
+  <text x="40" y="714" font-size="10.5" fill="#8a929e">功能区最多并排 4 个面板，宽度按比例分配；比例与打开集合写入 core-ui.layout，重启后恢复。</text>
+</svg>

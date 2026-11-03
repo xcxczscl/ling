@@ -126,7 +126,7 @@ ling uninstall demo-caller --purge          # 连 data/ 一起删
 |---|---|---|---|
 | `requires` 非空 | 拒绝装载，`E_MANIFEST_INVALID`，message 说明不支持依赖声明 | M3 | `plugin-support/01` 清单校验 |
 | 含 `[sidecar]` 段 | 拒绝装载，`E_MANIFEST_INVALID`，message 说明只支持进程内 | M4 | `plugin-support/01` §8 |
-| 内置插件只装三个 | `core-ui`、`core-job` 的源码不进 MVP 构建 | M5 | `builtin-plugins/00`、`01` 的 079 与 081 |
+| 内置插件只装三个 | `core-ui`、`core-job` 的源码不进 MVP 构建 | M5 | `docs/ling/README.md`、`docs/ling/plugin-support/01-插件装载与接口.md` 的 079 与 081 |
 
 选「拒绝」不选「忽略」的理由：清单写了 `requires` 却不解析，插件会以「以为依赖已满足」的状态激活，出错现象是调用时 `E_PLUGIN_MISSING`，而原因发生在装载那一刻。拒绝装载会在正确的时点报正确的错。
 

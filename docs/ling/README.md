@@ -1,11 +1,51 @@
-# ling builtin-plugins/00 内置插件总览
+# ling
 
-> 状态：已定稿 | 最后更新：2026-11-01
-> 依据：`docs/ling/main/01-需求规格.md` §3.9
+ling 是插件宿主，本身不提供业务功能，全部功能由插件提供。宿主与内置插件的版本各自独立，不在一个版本号里。
 
-五个内置插件随宿主分发、默认预装。**每个插件的详细设计在 `docs/ling/builtin-plugins/<插件名>/` 下，本文只保留共同规则与边界。**它们**没有任何特权**：与业务插件用同一套清单、同一条路由、同一套门禁，也可以被卸载。
+## 0. 项目结构与版本
 
-本文写清每个插件做什么、边界在哪、卸载后宿主退化成什么样。
+### 0.1 仓库目录
+
+| 目录 | 放什么 |
+|---|---|
+| `main/` | 宿主源码；内置插件源码在 `main/builtin-plugins/` |
+| `plugins/` | 第三方插件的源码与安装产物 |
+| `docs/` | 全部文档，入口见 `docs/README.md` |
+| `tools/` | 校验脚本、打包脚本 |
+| `tests/` | 单元测试与验收脚本 |
+| `third_party/` | 随仓库走的第三方依赖，构建时不下载 |
+| `run/` | 构建产物，不进 git |
+| `dist/` | 发行文件，不进 git |
+| `archive/` | 正式版发行归档，不进 git |
+| `other/` | 本地杂项，不进 git |
+| `old/` | 旧版本内容，只读，不进 git |
+
+### 0.2 版本
+
+宿主版本写在根 `CMakeLists.txt` 的 `LING_VERSION`；内置插件版本写在各自的 `plugin.toml`。内置插件不强制与宿主同版本，插件只需要在清单里写 `min_host` 声明最低宿主版本（`docs/common/02-版本号与兼容约定.md` §4）。
+
+| 组件 | 版本 | 唯一定义位置 |
+|---|---|---|
+| ling 宿主 | 0.1.0 | 根 `CMakeLists.txt` |
+| `core-ui` | 1.0.0 | `main/builtin-plugins/core-ui/plugin.toml` |
+| `core-settings` | 1.0.0 | `main/builtin-plugins/core-settings/plugin.toml` |
+| `core-plugin-manager` | 1.0.0 | `main/builtin-plugins/core-plugin-manager/plugin.toml` |
+| `core-job` | 1.0.0 | `main/builtin-plugins/core-job/plugin.toml` |
+| `core-log` | 1.0.0 | `main/builtin-plugins/core-log/plugin.toml` |
+
+### 0.3 归档位置
+
+| 内容 | 归档位置 |
+|---|---|
+| 宿主文档 | `docs/ling/archive/main/<宿主版本>/` |
+| 内置插件文档 | `docs/ling/archive/builtin-plugins/<插件名>/<插件版本>/` |
+| 其他插件文档 | `docs/plugins/<插件名>/archive/<插件版本>/` |
+| 宿主源码 | `main/archive/main/<宿主版本>/` |
+| 内置插件源码 | `main/archive/builtin-plugins/<插件名>/<插件版本>/` |
+| 其他插件源码 | `plugins/archive/<插件名>/<插件版本>/` |
+| 正式版发行包 | 根 `archive/<名称>-<版本>-archive.7z` |
+
+`docs/ling/archive/0.1.0/` 是旧布局的 0.1.0 快照，原样保留；新旧布局的区别见 `docs/ling/archive/README.md`。
 
 ---
 
@@ -27,6 +67,7 @@
 |---|---|
 | 清单字段、C ABI、错误码 | `docs/ling/plugin-support/01-插件装载与接口.md` |
 | 上下文与账本 | `docs/ling/plugin-support/02-上下文与效应账本.md` |
+| 插件界面的声明、资源与消息协议 | `docs/ling/plugin-support/ui/00-总览与约定.md` |
 | 管理端口的帧与子命令 | `docs/ling/main/04-详细设计/04-管理端口与命令行.md` |
 | 调和的激活顺序 | `docs/ling/main/04-详细设计/02-依赖解析与调和.md` |
 
@@ -35,7 +76,7 @@
 | 01 的节 | 编号 | 本文对应 |
 |---|---|---|
 | 3.9 内置插件 | 078 至 083 | §2 至 §9 |
-| 4.3 可靠性与隔离 | 116 | `docs/ling/builtin-plugins/core-ui/02-服务端与接口.md` 第 5 节 |
+| 4.3 可靠性与隔离 | 116 | `docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md` §9 |
 | 3.8 管理端口与命令行 | 075、077 | §7、§8.2 |
 
 ---
@@ -52,7 +93,7 @@
 | `core-job` | 定时任务 | 进程内 | 按时间表达式触发对插件方法的调用 | `core-settings@1`（本期不声明，见下注） |
 | `core-log` | 日志收集 | 进程内 | 收集插件日志、提供查询 | 无 |
 
-> **依赖列怎么理解**：`core-plugin-manager` 与 `core-job` 都需要 `core-settings` 提供配置存储。MVP 期间清单里不能写 `requires`（`11-MVP 范围.md` §4.2 第一条），所以这份依赖只作为「谁先谁后」的说明，不体现在清单里。装载顺序按插件名字母排，`core-job` 排在 `core-settings` 之前，因此它把「读任务定义」推迟到第一次心跳——那时所有内置插件都已激活。`core-plugin-manager` 不读配置，没有这个问题。
+> **依赖列怎么理解**：`core-plugin-manager` 与 `core-job` 都需要 `core-settings` 提供配置存储。MVP 期间清单里不能写 `requires`（`docs/ling/main/11-MVP 范围.md` §4.2 第一条），所以这份依赖只作为「谁先谁后」的说明，不体现在清单里。装载顺序按插件名字母排，`core-job` 排在 `core-settings` 之前，因此它把「读任务定义」推迟到第一次心跳——那时所有内置插件都已激活。`core-plugin-manager` 不读配置，没有这个问题。
 
 ### 2.2 为什么是这五个
 
@@ -72,10 +113,11 @@
 |---|---|
 | 编号前缀 | 一律 `core-` |
 | 编号占用 | `core-` 前缀保留给内置插件，业务插件不得使用；清单校验时检查 |
-| 版本起点 | 1.0.0，随宿主版本一起升 |
+| 版本来源 | 各插件的 `plugin.toml`，见 §0.2 |
+| 版本递增 | 由插件自己决定，不强制与宿主同版本，也不强制语义化 |
 | 版本兼容 | 内置插件的 `api` 与宿主一致；宿主升 `api` 主版本时，内置插件同版本一起换 |
 
-前缀保留的判定放在清单校验（`plugin-support/01` §3.4）里，新增一条检查：`id` 以 `core-` 开头且不在内置清单里时拒绝装载，返回 `E_MANIFEST_INVALID`。
+前缀保留的判定放在清单校验（`docs/ling/plugin-support/01-插件装载与接口.md` §3.4）里，新增一条检查：`id` 以 `core-` 开头且不在内置清单里时拒绝装载，返回 `E_MANIFEST_INVALID`。
 
 ---
 
@@ -87,7 +129,7 @@
 
 发布分 `webui` 与 `desktop` 两种形态，界面代码相同，差别只在由浏览器还是由 WebView2 窗口显示。
 
-**实现状态（2026-11-01）**：`webui` 版已可用——作为第五个内置插件预装，宿主自动拉起，浏览器打开 `127.0.0.1:8010` 就能用五个视图（插件、日志、配置、任务、设置）。页面在 `builtin-plugins/core-ui/page.html`，构建期嵌进 exe。`desktop` 版（WebView2 窗口）代码已写（`win_main.cpp`），可选编译（`LING_CORE_UI_DESKTOP=ON`），M6 打包时已出 desktop 版 zip。
+**实现状态（2026-11-01）**：`webui` 版已可用——作为第五个内置插件预装，宿主自动拉起，浏览器打开 `127.0.0.1:8010` 就能用五个视图（插件、日志、配置、任务、设置）。页面在 `main/builtin-plugins/core-ui/page.html`，构建期嵌进 exe。`desktop` 版（WebView2 窗口）代码已写（`win_main.cpp`），可选编译（`LING_CORE_UI_DESKTOP=ON`），M6 打包时已出 desktop 版 zip。
 
 ---
 
@@ -215,7 +257,7 @@
 
 ### 9.4 MVP 阶段的实际范围
 
-MVP 做四个内置插件（`11-MVP 范围.md` §4.2 第三条：不装 `core-ui`），每个插件也只做与「宿主能跑起来、能被使用者用上」直接相关的方法：
+MVP 做四个内置插件（`docs/ling/main/11-MVP 范围.md` §4.2 第三条：不装 `core-ui`），每个插件也只做与「宿主能跑起来、能被使用者用上」直接相关的方法：
 
 | 插件 | MVP 已实现 | 后补 |
 |---|---|---|
@@ -228,7 +270,7 @@ MVP 做四个内置插件（`11-MVP 范围.md` §4.2 第三条：不装 `core-ui
 
 ### 9.5 `core-ui` 的装载方式
 
-`core-ui` 是侧车插件：宿主装载时拉起 `core-ui` 进程，走 jsonl 帧握手（`plugin-support/01` §8），产物在插件目录 `plugins/core-ui/` 下，与业务插件不可区分。源码在 `main/builtin-plugins/core-ui/`（服务端 `ui_server.cpp` 也在其中，不占内核）。
+`core-ui` 是侧车插件：宿主装载时拉起 `core-ui` 进程，走 jsonl 帧握手（`docs/ling/plugin-support/01-插件装载与接口.md` §8），产物在插件目录 `plugins/core-ui/` 下，与业务插件不可区分。源码在 `main/builtin-plugins/core-ui/`（服务端 `ui_server.cpp` 也在其中，不占内核）。
 
 管理端口为此新增了 `kernel.call` 受限代理（`docs/ling/main/04-详细设计/04-管理端口与命令行.md` §4.5）：配置读写与定时任务不是内核方法，没有这层代理，界面与命令行都调不到。
 
@@ -240,9 +282,9 @@ MVP 做四个内置插件（`11-MVP 范围.md` §4.2 第三条：不装 `core-ui
 
 | # | 事项 | 结论 | 落点 |
 |---|---|---|---|
-| 1 | `core-` 前缀的占用检查要加进 `plugin-support/01` §3.4 的校验顺序 | 加为第 11 步，失败返回 `E_MANIFEST_INVALID` | §2.3、plugin-support/01 |
+| 1 | `core-` 前缀的占用检查要加进 `docs/ling/plugin-support/01-插件装载与接口.md` §3.4 的校验顺序 | 加为第 11 步，失败返回 `E_MANIFEST_INVALID` | §2.3、plugin-support/01 |
 | 2 | `core-job` 的时间表达式格式未定（cron 还是简化写法） | 用五段 cron，生态熟、文档多；不支持秒级 | `docs/ling/builtin-plugins/core-job/02-设计与接口.md` 第 2 节 **本期设定** |
-| 3 | 界面端口段 8010 起是否够用（多实例场景） | 单实例设计，够用 | `docs/ling/builtin-plugins/core-ui/02-服务端与接口.md` 第 1 节 |
+| 3 | 界面端口段 8010 起是否够用（多实例场景） | 单实例设计，够用 | `docs/ling/builtin-plugins/core-ui/04-详细设计/01-服务端与接口.md` §1 |
 | 4 | `core-settings` 4 MB 上限没有依据 | 按「几百个键、每键几十字节」估，留两个数量级余量 | `docs/ling/builtin-plugins/core-settings/02-设计与接口.md` 第 1 节 **本期设定** |
 
 ---
@@ -251,17 +293,10 @@ MVP 做四个内置插件（`11-MVP 范围.md` §4.2 第三条：不装 `core-ui
 
 | 文档 | 关系 |
 |---|---|
+| `docs/README.md` | 全部文档的入口 |
 | `docs/ling/main/01-需求规格.md` | 本文实现的需求 |
 | `docs/ling/main/00-总览与术语.md` | 零内容边界（§2.1） |
 | `docs/ling/main/03-架构设计.md` | 内置插件的定位与 A-8 决策 |
 | `docs/ling/plugin-support/01-插件装载与接口.md` | 清单、C ABI、错误码 |
 | `docs/ling/plugin-support/02-上下文与效应账本.md` | `write_config` 与账本 |
 | `docs/ling/main/04-详细设计/04-管理端口与命令行.md` | `kernel.*` 方法与两条日志路径 |
-
-## 变更记录
-
-| 日期 | 改了什么 | 为什么 |
-|---|---|---|
-| 2026-10-29 | `settings.json` 加 `schema_version` | 升级回滚时需要判断配置格式版本，否则旧版本会把新字段丢掉（依据 `docs/ling/main/08-部署与发布.md` §5.2） |
-| 2026-11-01 | core-ui 装载方式改现状、desktop 状态改已实现 | §9.5 由「先做独立 ling-ui 的过渡」改为「core-ui 是侧车插件」；§3 实现状态 desktop 改为代码已写、M6 已出 zip；源码位置 §9.1 更新 |
-| 2026-10-28 | 初稿 | 五个内置插件的职责与边界、卸载后果矩阵、预装与升级规则、源码位置与无特权的验证方式 |

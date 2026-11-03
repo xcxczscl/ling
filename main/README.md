@@ -12,6 +12,7 @@
 | `sys/` | 平台抽象层：Windows 与 POSIX 各一份实现 |
 | `SDK/python/` | Python 侧车 SDK（`ling_sidecar.py`） |
 | `builtin-plugins/` | 五个内置插件（含 `core-ui`），每个插件有自己的 `CMakeLists.txt` |
+| `archive/` | 源码归档：`main/<宿主版本>/` 与 `builtin-plugins/<插件名>/<插件版本>/` |
 | `CMakeLists.txt` | 本目录的构建脚本（内核、平台层、命令行入口） |
 
 ## app/ —— 命令行入口
